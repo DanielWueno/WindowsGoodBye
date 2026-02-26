@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:zxing="clr-namespace:ZXing.Net.Maui.Controls;assembly=ZXing.Net.MAUI.Controls"
+             xmlns:zxingCore="clr-namespace:ZXing.Net.Maui;assembly=ZXing.Net.MAUI"
+             x:Class="WindowsGoodBye.Mobile.QrScanPage"
+             Title="Scan QR Code">
+
+    <Grid>
+        <!-- Camera preview with barcode reader -->
+        <zxing:CameraBarcodeReaderView x:Name="barcodeReader"
+                                        IsDetecting="True"
+                                        BarcodesDetected="OnBarcodesDetected">
+            <zxing:CameraBarcodeReaderView.Options>
+                <zxingCore:BarcodeReaderOptions
+                    Formats="QrCode"
+                    AutoRotate="True"
+                    Multiple="False"
+                    TryHarder="True" />
+            </zxing:CameraBarcodeReaderView.Options>
+        </zxing:CameraBarcodeReaderView>
+
+        <!-- Top overlay with instructions -->
+        <Frame VerticalOptions="Start" HorizontalOptions="Fill"
+               BackgroundColor="#CC000000" CornerRadius="0"
+               Padding="20" HasShadow="False" BorderColor="Transparent">
+            <VerticalStackLayout Spacing="6" HorizontalOptions="Center">
+                <Label Text="Scan QR Code" FontSize="20" FontAttributes="Bold"
+                       TextColor="White" HorizontalOptions="Center" />
+                <Label Text="Point your camera at the QR code shown&#10;on the WindowsGoodBye tray app"
+                       FontSize="13" TextColor="#CCFFFFFF" HorizontalOptions="Center"
+                       HorizontalTextAlignment="Center" />
+            </VerticalStackLayout>
+        </Frame>
+
+        <!-- Status overlay (shown during pairing) -->
+        <Frame x:Name="statusOverlay" IsVisible="False"
+               VerticalOptions="Center" HorizontalOptions="Center"
+               BackgroundColor="#DD000000" CornerRadius="16" Padding="30"
+               HasShadow="True" BorderColor="Transparent">
+            <VerticalStackLayout Spacing="12" HorizontalOptions="Center">
+                <ActivityIndicator IsRunning="True" Color="White" />
+                <Label x:Name="lblPairingStatus" Text="Pairing..."
+                       FontSize="16" TextColor="White" HorizontalOptions="Center" />
+            </VerticalStackLayout>
+        </Frame>
+    </Grid>
+
+</ContentPage>

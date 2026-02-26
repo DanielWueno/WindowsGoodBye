@@ -1,0 +1,76 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="WindowsGoodBye.Mobile.MainPage"
+             Title="WindowsGoodBye">
+
+    <Grid RowDefinitions="Auto,*,Auto" Padding="0">
+
+        <!-- Status bar -->
+        <Frame Grid.Row="0" BackgroundColor="{AppThemeBinding Light=#1976D2, Dark=#1565C0}"
+               CornerRadius="0" Padding="16" HasShadow="False" BorderColor="Transparent">
+            <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,*">
+                <Label x:Name="lblStatusIcon" Text="&#9899;" FontSize="14" VerticalOptions="Center" TextColor="#FF5252" />
+                <Label x:Name="lblStatus" Text="Service stopped" Grid.Column="1" Margin="10,0,0,0"
+                       FontSize="14" TextColor="White" VerticalOptions="Center" />
+                <Label x:Name="lblTransport" Text="" Grid.Row="1" Grid.ColumnSpan="2" Margin="0,4,0,0"
+                       FontSize="11" TextColor="#BBDEFB" />
+            </Grid>
+        </Frame>
+
+        <!-- PC List -->
+        <CollectionView Grid.Row="1" x:Name="pcListView"
+                        Margin="8" SelectionMode="None">
+            <CollectionView.EmptyView>
+                <StackLayout VerticalOptions="Center" HorizontalOptions="Center" Spacing="12" Padding="20">
+                    <Label Text="No paired PCs" FontSize="18" FontAttributes="Bold"
+                           HorizontalOptions="Center"
+                           TextColor="{AppThemeBinding Light=Gray, Dark=LightGray}" />
+                    <Label Text="Tap the + button to scan a QR code&#10;from the WindowsGoodBye tray app on your PC"
+                           FontSize="14" HorizontalOptions="Center" HorizontalTextAlignment="Center"
+                           TextColor="{AppThemeBinding Light=DarkGray, Dark=Gray}" />
+                </StackLayout>
+            </CollectionView.EmptyView>
+            <CollectionView.ItemTemplate>
+                <DataTemplate>
+                    <Frame Margin="4,4" Padding="12" CornerRadius="12" HasShadow="True"
+                           BorderColor="{AppThemeBinding Light=#E0E0E0, Dark=#444}"
+                           BackgroundColor="{AppThemeBinding Light=White, Dark=#2D2D2D}">
+                        <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+                            <Label Text="&#128187;" FontSize="32" VerticalOptions="Center" />
+
+                            <VerticalStackLayout Grid.Column="1" VerticalOptions="Center" Spacing="2">
+                                <Label Text="{Binding PcName}" FontSize="17" FontAttributes="Bold" />
+                                <Label Text="{Binding StatusText}" FontSize="12"
+                                       TextColor="{Binding StatusColor}" />
+                                <Label Text="{Binding DetailText}" FontSize="11" TextColor="Gray" />
+                            </VerticalStackLayout>
+
+                            <Button Grid.Column="2"
+                                    Text="✕" FontSize="18" TextColor="#FF5252"
+                                    WidthRequest="40" HeightRequest="40"
+                                    VerticalOptions="Center"
+                                    BackgroundColor="Transparent"
+                                    Clicked="OnDeletePcClicked" />
+                        </Grid>
+                    </Frame>
+                </DataTemplate>
+            </CollectionView.ItemTemplate>
+        </CollectionView>
+
+        <!-- Bottom action bar -->
+        <Grid Grid.Row="2" Padding="16,8" ColumnDefinitions="*,Auto"
+              BackgroundColor="{AppThemeBinding Light=#F5F5F5, Dark=#1A1A1A}">
+            <Button x:Name="btnToggleService" Text="Start Service"
+                    Clicked="OnToggleServiceClicked"
+                    BackgroundColor="{AppThemeBinding Light=#1976D2, Dark=#1565C0}"
+                    TextColor="White" CornerRadius="8" HeightRequest="48" />
+            <Button Grid.Column="1" Text="  +  " FontSize="22" FontAttributes="Bold"
+                    Clicked="OnPairNewClicked" Margin="8,0,0,0"
+                    BackgroundColor="#448AFF"
+                    TextColor="White" CornerRadius="8" HeightRequest="48" WidthRequest="60" />
+        </Grid>
+
+    </Grid>
+
+</ContentPage>

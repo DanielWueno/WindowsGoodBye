@@ -1,0 +1,48 @@
+# Build outputs
+**/bin/
+**/obj/
+*.dll
+*.exe
+*.obj
+*.exp
+*.lib
+*.pdb
+*.ilk
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.slnLaunch.user
+
+# NuGet
+**/packages/
+*.nupkg
+
+# Rider
+.idea/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Secrets / DB
+*.db
+*.db-shm
+*.db-wal
+
+# Legacy project (original third-party code)
+legacy/
+android/
+AndroidClient/
+WindowsApp/
+
+# Temp files
+stop
+WinGBProvider.obj
