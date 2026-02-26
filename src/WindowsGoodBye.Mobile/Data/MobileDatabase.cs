@@ -9,6 +9,7 @@ namespace WindowsGoodBye.Mobile.Data;
 public class MobileDatabase : DbContext
 {
     public DbSet<PairedPc> PairedPcs => Set<PairedPc>();
+    public DbSet<AppSetting> Settings => Set<AppSetting>();
 
     private readonly string _dbPath;
 
@@ -35,6 +36,11 @@ public class MobileDatabase : DbContext
         {
             e.HasKey(p => p.Id);
             e.Property(p => p.Id).ValueGeneratedOnAdd();
+        });
+
+        modelBuilder.Entity<AppSetting>(e =>
+        {
+            e.HasKey(s => s.Key);
         });
     }
 
@@ -80,4 +86,13 @@ public class PairedPc
     public byte[] AuthKey => Convert.FromBase64String(AuthKeyBase64);
     public byte[]? PairEncryptKey => string.IsNullOrEmpty(PairEncryptKeyBase64)
         ? null : Convert.FromBase64String(PairEncryptKeyBase64);
+}
+
+/// <summary>
+/// Simple key-value settings storage (FCM token, etc.)
+/// </summary>
+public class AppSetting
+{
+    public string Key { get; set; } = "";
+    public string Value { get; set; } = "";
 }

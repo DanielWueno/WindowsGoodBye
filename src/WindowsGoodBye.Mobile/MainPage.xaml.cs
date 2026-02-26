@@ -16,6 +16,15 @@ public partial class MainPage : ContentPage
 
         _authListener.AuthenticationRequested += OnAuthRequested;
         _authListener.PairingCompleted += OnPairingCompleted;
+        _authListener.TransportStateChanged += OnTransportStateChanged;
+
+        // Listen for auth prompt triggered by notification tap (from background)
+#pragma warning disable CS0618 // MessagingCenter is deprecated but works fine for this
+        MessagingCenter.Subscribe<object, AuthRequest>(this, "AuthPrompt", (_, request) =>
+        {
+            OnAuthRequested(request);
+        });
+#pragma warning restore CS0618
     }
 
     protected override void OnAppearing()
@@ -23,6 +32,13 @@ public partial class MainPage : ContentPage
         base.OnAppearing();
         RefreshPcList();
         UpdateServiceStatus();
+
+        // Check if there's a pending auth request from when app was in background
+        var pending = _authListener.PendingAuthRequest;
+        if (pending != null)
+        {
+            OnAuthRequested(pending);
+        }
     }
 
     private void RefreshPcList()
@@ -51,7 +67,9 @@ public partial class MainPage : ContentPage
             lblTransport.Text = _authListener.ActiveTransport switch
             {
                 WindowsGoodBye.Core.Protocol.TransportType.Bluetooth => "🔗 Connected via Bluetooth",
-                WindowsGoodBye.Core.Protocol.TransportType.TcpUsb => "🔌 Connected via USB",
+                WindowsGoodBye.Core.Protocol.TransportType.TcpUsb when _authListener.IsTransportConnected
+                    => "🔌 Connected via USB",
+                WindowsGoodBye.Core.Protocol.TransportType.TcpUsb => "🔌 USB - Reconnecting...",
                 _ => "📶 WiFi / UDP multicast"
             };
         }
@@ -164,6 +182,11 @@ public partial class MainPage : ContentPage
                 "Make sure to set your Windows password in the tray app if you haven't already.",
                 "OK");
         });
+    }
+
+    private void OnTransportStateChanged(WindowsGoodBye.Core.Protocol.TransportType transport, bool connected)
+    {
+        MainThread.BeginInvokeOnMainThread(UpdateServiceStatus);
     }
 }
 

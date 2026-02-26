@@ -40,6 +40,8 @@
 		<PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="9.0.9" />
 		<PackageReference Include="ZXing.Net.Maui.Controls" Version="0.4.0" />
 		<PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.*" />
+		<PackageReference Include="Xamarin.Firebase.Messaging" Version="124.1.0.1"
+			Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'" />
 	</ItemGroup>
 
 	<ItemGroup>

@@ -7,15 +7,13 @@ using WindowsGoodBye.Mobile.Data;
 namespace WindowsGoodBye.Mobile.Services;
 
 /// <summary>
-/// Multi-transport auth listener that communicates with the Windows service.
-/// Tries transports in priority order:
-///   1. Bluetooth RFCOMM — works without WiFi
-///   2. TCP/USB (ADB forward) — works over USB cable
-///   3. UDP WiFi — multicast/unicast on the LAN (fallback)
+/// Multi-transport auth listener with auto-reconnect.
+/// Maintains a persistent connection to the Windows service, automatically
+/// cycling through transports (BT -> TCP/USB -> UDP) when connections drop.
 ///
 /// Protocol flow (same on all transports):
-/// 1. PC sends auth_discover → we respond auth_alive
-/// 2. PC sends auth_req (encrypted nonce) → we trigger fingerprint → respond auth_resp (HMAC)
+/// 1. PC sends auth_discover -> we respond auth_alive
+/// 2. PC sends auth_req (encrypted nonce) -> we trigger fingerprint -> respond auth_resp (HMAC)
 /// </summary>
 public class AuthListener : IDisposable
 {
@@ -33,24 +31,39 @@ public class AuthListener : IDisposable
     private CancellationTokenSource? _cts;
     private bool _disposed;
 
+    // Auto-reconnect state
+    private int _reconnectAttempts;
+    private const int MaxReconnectDelaySec = 60;
+    private const int BaseReconnectDelaySec = 5;
+    private const int HealthCheckIntervalSec = 30;
+    private DateTime _lastMessageReceived = DateTime.UtcNow;
+
+    // Pending auth request (for background biometric handling)
+    private AuthRequest? _pendingAuthRequest;
+    internal AuthRequest? PendingAuthRequest => _pendingAuthRequest;
+
     /// <summary>Fired when a PC requests fingerprint authentication.</summary>
     public event Action<AuthRequest>? AuthenticationRequested;
 
     /// <summary>Fired when pairing is finalized by the PC.</summary>
-    public event Action<string, string>? PairingCompleted; // deviceId, pcName
+    public event Action<string, string>? PairingCompleted;
+
+    /// <summary>Fired when transport state changes (for UI updates).</summary>
+    public event Action<Protocol.TransportType, bool>? TransportStateChanged;
 
     /// <summary>Current active transport type.</summary>
     public Protocol.TransportType ActiveTransport { get; private set; } = Protocol.TransportType.Udp;
+
+    /// <summary>Whether the current transport is connected (BT/TCP have active streams).</summary>
+    public bool IsTransportConnected { get; private set; }
 
     private static AuthListener? _instance;
     public static AuthListener Instance => _instance ??= new AuthListener();
 
     public bool IsRunning => _cts != null && !_cts.IsCancellationRequested;
 
-    /// <summary>Completes when the transport layer is fully initialized (listeners bound).</summary>
     private TaskCompletionSource<bool> _transportReady = new();
 
-    /// <summary>Wait until the AuthListener transport is fully ready (BT/TCP/UDP bound).</summary>
     public Task WaitForTransportAsync(CancellationToken ct = default)
     {
         ct.Register(() => _transportReady.TrySetCanceled());
@@ -68,46 +81,106 @@ public class AuthListener : IDisposable
 
         _cts = new CancellationTokenSource();
         _transportReady = new TaskCompletionSource<bool>();
-        _ = Task.Run(() => StartWithPriorityAsync(_cts.Token));
+        _reconnectAttempts = 0;
+        _lastMessageReceived = DateTime.UtcNow;
+
+        _ = Task.Run(() => ConnectionManagerLoop(_cts.Token));
     }
 
     /// <summary>
-    /// Attempt transports in priority order: Bluetooth → TCP/USB → UDP.
-    /// Falls back automatically if higher-priority options fail.
+    /// Main connection manager loop. Continuously maintains the best available
+    /// transport with automatic reconnection and health monitoring.
     /// </summary>
-    private async Task StartWithPriorityAsync(CancellationToken ct)
+    private async Task ConnectionManagerLoop(CancellationToken ct)
     {
-        // 1. Try Bluetooth RFCOMM
+        System.Diagnostics.Debug.WriteLine("[AuthListener] Connection manager started");
+
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                var connected = await TryConnectBestTransportAsync(ct);
+
+                if (connected)
+                {
+                    _reconnectAttempts = 0;
+                    _transportReady.TrySetResult(true);
+                    UpdateForegroundNotification();
+
+                    await MonitorConnectionHealthAsync(ct);
+
+                    System.Diagnostics.Debug.WriteLine(
+                        $"[AuthListener] {ActiveTransport} connection lost, will reconnect...");
+                    IsTransportConnected = false;
+                    TransportStateChanged?.Invoke(ActiveTransport, false);
+                    UpdateForegroundNotification();
+                }
+                else
+                {
+                    EnsureUdpRunning();
+                    _transportReady.TrySetResult(true);
+                }
+
+                _reconnectAttempts++;
+                var delaySec = Math.Min(
+                    BaseReconnectDelaySec * (int)Math.Pow(2, Math.Min(_reconnectAttempts - 1, 4)),
+                    MaxReconnectDelaySec);
+
+                System.Diagnostics.Debug.WriteLine(
+                    $"[AuthListener] Reconnect attempt {_reconnectAttempts}, waiting {delaySec}s...");
+
+                await Task.Delay(delaySec * 1000, ct);
+            }
+            catch (OperationCanceledException) { break; }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[AuthListener] Connection loop error: {ex.Message}");
+                await Task.Delay(5000, ct);
+            }
+        }
+
+        System.Diagnostics.Debug.WriteLine("[AuthListener] Connection manager stopped");
+    }
+
+    private async Task<bool> TryConnectBestTransportAsync(CancellationToken ct)
+    {
 #if ANDROID
+        // 1. Try Bluetooth RFCOMM
         try
         {
             if (Platforms.Android.BluetoothTransport.IsAvailable)
             {
-                _btTransport = new Platforms.Android.BluetoothTransport();
-                _btTransport.MessageReceived += msg => ProcessMessage(msg, null);
+                var bt = new Platforms.Android.BluetoothTransport();
+                bt.MessageReceived += msg =>
+                {
+                    _lastMessageReceived = DateTime.UtcNow;
+                    ProcessMessage(msg, null);
+                };
 
-                var address = await _btTransport.ConnectToAnyAsync(ct);
+                using var btTimeout = new CancellationTokenSource(10000);
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, btTimeout.Token);
+
+                var address = await bt.ConnectToAnyAsync(linked.Token);
                 if (address != null)
                 {
+                    _btTransport?.Dispose();
+                    _btTransport = bt;
                     ActiveTransport = Protocol.TransportType.Bluetooth;
+                    IsTransportConnected = true;
+                    TransportStateChanged?.Invoke(ActiveTransport, true);
                     System.Diagnostics.Debug.WriteLine($"[AuthListener] Connected via Bluetooth to {address}");
-
-                    _transportReady.TrySetResult(true);
-                    // Send alive for all paired PCs on this transport
                     await SendAliveForAllPcsAsync(SendBluetoothAsync);
-                    return; // Bluetooth is active, no need for other transports
+                    return true;
                 }
                 else
                 {
-                    _btTransport.Dispose();
-                    _btTransport = null;
-                    System.Diagnostics.Debug.WriteLine("[AuthListener] No Bluetooth connection available");
+                    bt.Dispose();
                 }
             }
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"[AuthListener] Bluetooth init failed: {ex.Message}");
+            System.Diagnostics.Debug.WriteLine($"[AuthListener] BT connect failed: {ex.Message}");
             _btTransport?.Dispose();
             _btTransport = null;
         }
@@ -116,43 +189,121 @@ public class AuthListener : IDisposable
         // 2. Try TCP/USB (ADB port forwarding)
         try
         {
-            _tcpTransport = new TcpUsbTransport();
-            _tcpTransport.MessageReceived += msg => ProcessMessage(msg, null);
-
-            if (await _tcpTransport.ConnectAsync(ct))
+            var tcp = new TcpUsbTransport();
+            tcp.MessageReceived += msg =>
             {
-                ActiveTransport = Protocol.TransportType.TcpUsb;
-                System.Diagnostics.Debug.WriteLine("[AuthListener] Connected via TCP/USB");
+                _lastMessageReceived = DateTime.UtcNow;
+                ProcessMessage(msg, null);
+            };
 
-                _transportReady.TrySetResult(true);
+            using var tcpTimeout = new CancellationTokenSource(5000);
+            using var linked2 = CancellationTokenSource.CreateLinkedTokenSource(ct, tcpTimeout.Token);
+
+            if (await tcp.ConnectAsync(linked2.Token))
+            {
+                _tcpTransport?.Dispose();
+                _tcpTransport = tcp;
+                ActiveTransport = Protocol.TransportType.TcpUsb;
+                IsTransportConnected = true;
+                TransportStateChanged?.Invoke(ActiveTransport, true);
+                System.Diagnostics.Debug.WriteLine("[AuthListener] Connected via TCP/USB");
                 await SendAliveForAllPcsAsync(SendTcpAsync);
-                return; // TCP is active
+                return true;
             }
             else
             {
-                _tcpTransport.Dispose();
-                _tcpTransport = null;
-                System.Diagnostics.Debug.WriteLine("[AuthListener] TCP/USB not available");
+                tcp.Dispose();
             }
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"[AuthListener] TCP/USB init failed: {ex.Message}");
+            System.Diagnostics.Debug.WriteLine($"[AuthListener] TCP connect failed: {ex.Message}");
             _tcpTransport?.Dispose();
             _tcpTransport = null;
         }
 
         // 3. Fallback: UDP WiFi
-        StartUdp();
-        ActiveTransport = Protocol.TransportType.Udp;
-        _transportReady.TrySetResult(true);
         System.Diagnostics.Debug.WriteLine("[AuthListener] Using WiFi/UDP fallback");
+        ActiveTransport = Protocol.TransportType.Udp;
+        IsTransportConnected = false;
+        return false;
+    }
+
+    private async Task MonitorConnectionHealthAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            await Task.Delay(HealthCheckIntervalSec * 1000, ct);
+
+            bool alive = false;
+#if ANDROID
+            if (ActiveTransport == Protocol.TransportType.Bluetooth)
+                alive = _btTransport?.IsConnected == true;
+#endif
+            if (ActiveTransport == Protocol.TransportType.TcpUsb)
+                alive = _tcpTransport?.IsConnected == true;
+
+            if (!alive)
+            {
+                System.Diagnostics.Debug.WriteLine("[AuthListener] Health check: connection dead");
+                DisconnectCurrentTransport();
+                return;
+            }
+
+            if ((DateTime.UtcNow - _lastMessageReceived).TotalMinutes > 2)
+            {
+                System.Diagnostics.Debug.WriteLine("[AuthListener] No messages for 2 min, sending keep-alive...");
+                try
+                {
+                    Func<string, Task> sendFunc = _ => Task.CompletedTask;
+#if ANDROID
+                    if (ActiveTransport == Protocol.TransportType.Bluetooth)
+                        sendFunc = SendBluetoothAsync;
+#endif
+                    if (ActiveTransport == Protocol.TransportType.TcpUsb)
+                        sendFunc = SendTcpAsync;
+                    await SendAliveForAllPcsAsync(sendFunc);
+                }
+                catch
+                {
+                    System.Diagnostics.Debug.WriteLine("[AuthListener] Keep-alive failed, reconnecting...");
+                    DisconnectCurrentTransport();
+                    return;
+                }
+            }
+        }
+    }
+
+    private void DisconnectCurrentTransport()
+    {
+#if ANDROID
+        if (ActiveTransport == Protocol.TransportType.Bluetooth)
+        {
+            _btTransport?.Disconnect();
+            _btTransport = null;
+        }
+#endif
+        if (ActiveTransport == Protocol.TransportType.TcpUsb)
+        {
+            _tcpTransport?.Disconnect();
+            _tcpTransport = null;
+        }
+        IsTransportConnected = false;
+    }
+
+    private void EnsureUdpRunning()
+    {
+        if (_multicastClient != null) return;
+        StartUdp();
     }
 
     private void StartUdp()
     {
         try
         {
+            _multicastClient?.Close();
+            _unicastClient?.Close();
+
             _multicastClient = new UdpClient();
             _multicastClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
             _multicastClient.Client.Bind(new IPEndPoint(IPAddress.Any, Protocol.MulticastPort));
@@ -176,21 +327,19 @@ public class AuthListener : IDisposable
     public void Stop()
     {
         _cts?.Cancel();
-
 #if ANDROID
         _btTransport?.Disconnect();
         _btTransport = null;
 #endif
         _tcpTransport?.Disconnect();
         _tcpTransport = null;
-
         try { _multicastClient?.DropMulticastGroup(_multicastGroup); } catch { }
         _multicastClient?.Close();
         _unicastClient?.Close();
         _multicastClient = null;
         _unicastClient = null;
-
         ActiveTransport = Protocol.TransportType.Udp;
+        IsTransportConnected = false;
         System.Diagnostics.Debug.WriteLine("[AuthListener] Stopped");
     }
 
@@ -202,16 +351,19 @@ public class AuthListener : IDisposable
             {
                 var result = await client.ReceiveAsync(ct);
                 var message = Encoding.UTF8.GetString(result.Buffer);
+                _lastMessageReceived = DateTime.UtcNow;
                 ProcessMessage(message, result.RemoteEndPoint.Address);
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[AuthListener] Error: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[AuthListener] UDP error: {ex.Message}");
                 try { await Task.Delay(200, ct); } catch { break; }
             }
         }
     }
+
+    // ===== Message Processing =====
 
     private void ProcessMessage(string message, IPAddress? fromAddress)
     {
@@ -244,14 +396,12 @@ public class AuthListener : IDisposable
 
         System.Diagnostics.Debug.WriteLine($"[AuthListener] Discover from {pc.PcName} via {ActiveTransport}");
 
-        // Update last IP (only if from UDP)
         if (fromAddress != null)
         {
             pc.LastIp = fromAddress.ToString();
             db.SaveChanges();
         }
 
-        // Respond: we're alive
         var response = Protocol.AuthAlivePrefix + Convert.ToBase64String(deviceIdBytes);
         _ = SendReplyAsync(response, fromAddress);
     }
@@ -286,8 +436,7 @@ public class AuthListener : IDisposable
 
         System.Diagnostics.Debug.WriteLine($"[AuthListener] Auth request from {pc.PcName} via {ActiveTransport}");
 
-        // Fire event for the UI to handle biometric auth
-        AuthenticationRequested?.Invoke(new AuthRequest
+        var request = new AuthRequest
         {
             PcName = pc.PcName,
             DeviceIdBytes = deviceIdBytes,
@@ -295,7 +444,50 @@ public class AuthListener : IDisposable
             AuthKey = pc.AuthKey,
             FromAddress = fromAddress,
             Transport = ActiveTransport
-        });
+        };
+
+        _pendingAuthRequest = request;
+        AuthenticationRequested?.Invoke(request);
+
+#if ANDROID
+        ShowBackgroundAuthNotification(pc.PcName);
+#endif
+    }
+
+#if ANDROID
+    private void ShowBackgroundAuthNotification(string pcName)
+    {
+        try
+        {
+            var activity = Platform.CurrentActivity;
+            bool isInForeground = activity != null && !activity.IsFinishing && !activity.IsDestroyed;
+
+            if (isInForeground)
+            {
+                var appProcessInfo = new global::Android.App.ActivityManager.RunningAppProcessInfo();
+                global::Android.App.ActivityManager.GetMyMemoryState(appProcessInfo);
+                isInForeground = appProcessInfo.Importance == global::Android.App.Importance.Foreground;
+            }
+
+            if (!isInForeground)
+            {
+                System.Diagnostics.Debug.WriteLine("[AuthListener] App in background, showing auth notification");
+                Platforms.Android.AuthForegroundService.Instance?.ShowAuthPromptNotification(pcName);
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[AuthListener] Notification error: {ex.Message}");
+        }
+    }
+#endif
+
+    public void ClearPendingAuthRequest()
+    {
+        _pendingAuthRequest = null;
+#if ANDROID
+        Platforms.Android.AuthForegroundService.Instance?.DismissAuthPromptNotification();
+#endif
     }
 
     private void HandlePairFinish(string payload)
@@ -305,7 +497,6 @@ public class AuthListener : IDisposable
             using var db = new MobileDatabase();
             db.Initialize();
 
-            // Find the pending (not yet paired) entry
             var pending = db.PairedPcs.FirstOrDefault(p => !p.IsPaired);
             if (pending?.PairEncryptKey == null) return;
 
@@ -316,7 +507,7 @@ public class AuthListener : IDisposable
             pending.PcName = pcName;
             pending.IsPaired = true;
             pending.PairedAt = DateTime.UtcNow;
-            pending.PairEncryptKeyBase64 = null; // No longer needed
+            pending.PairEncryptKeyBase64 = null;
             db.SaveChanges();
 
             System.Diagnostics.Debug.WriteLine($"[AuthListener] Pairing completed: {pcName}");
@@ -328,7 +519,8 @@ public class AuthListener : IDisposable
         }
     }
 
-    /// <summary>Send the auth response after successful fingerprint.</summary>
+    // ===== Sending =====
+
     public async Task SendAuthResponseAsync(AuthRequest request)
     {
         var hmac = CryptoUtils.ComputeHmac(request.Nonce, request.AuthKey);
@@ -338,11 +530,10 @@ public class AuthListener : IDisposable
 
         var response = Protocol.AuthResponsePrefix + Convert.ToBase64String(responsePayload);
         await SendReplyAsync(response, request.FromAddress);
+        ClearPendingAuthRequest();
         System.Diagnostics.Debug.WriteLine($"[AuthListener] Auth response sent via {ActiveTransport}");
     }
 
-    /// <summary>Send a pairing request using the current best transport.
-    /// If pcIpAddresses are provided (from QR code), sends unicast directly to each PC IP.</summary>
     public async Task SendPairRequestAsync(Guid deviceId, byte[] pairEncryptKey,
         string friendlyName, string modelName, string[]? pcIpAddresses = null)
     {
@@ -363,10 +554,8 @@ public class AuthListener : IDisposable
 
         var message = Protocol.PairRequestPrefix + Convert.ToBase64String(payload);
 
-        // 1. Try the active stream transport (BT / TCP-USB)
         await SendReplyAsync(message, null);
 
-        // 2. Send UNICAST directly to every PC IP from the QR code — most reliable
         if (pcIpAddresses is { Length: > 0 })
         {
             foreach (var ipStr in pcIpAddresses)
@@ -379,39 +568,27 @@ public class AuthListener : IDisposable
             }
         }
 
-        // 3. Also try multicast as fallback
         if (ActiveTransport == Protocol.TransportType.Udp)
             await SendMulticastAsync(message);
     }
-
-    // --- Unified send: routes to the active transport ---
 
     private async Task SendReplyAsync(string message, IPAddress? udpTarget)
     {
         try
         {
-            switch (ActiveTransport)
-            {
-                case Protocol.TransportType.Bluetooth:
 #if ANDROID
-                    if (_btTransport?.IsConnected == true)
-                    {
-                        await _btTransport.SendAsync(message);
-                        return;
-                    }
+            if (ActiveTransport == Protocol.TransportType.Bluetooth && _btTransport?.IsConnected == true)
+            {
+                await _btTransport.SendAsync(message);
+                return;
+            }
 #endif
-                    break;
-
-                case Protocol.TransportType.TcpUsb:
-                    if (_tcpTransport?.IsConnected == true)
-                    {
-                        await _tcpTransport.SendAsync(message);
-                        return;
-                    }
-                    break;
+            if (ActiveTransport == Protocol.TransportType.TcpUsb && _tcpTransport?.IsConnected == true)
+            {
+                await _tcpTransport.SendAsync(message);
+                return;
             }
 
-            // Fallback to UDP unicast
             if (udpTarget != null)
                 await SendUdpUnicastAsync(message, udpTarget);
         }
@@ -480,6 +657,24 @@ public class AuthListener : IDisposable
         }
     }
 
+    private void UpdateForegroundNotification()
+    {
+#if ANDROID
+        try
+        {
+            var text = ActiveTransport switch
+            {
+                Protocol.TransportType.Bluetooth => "Connected via Bluetooth",
+                Protocol.TransportType.TcpUsb when IsTransportConnected => "Connected via USB",
+                _ when IsTransportConnected => $"Connected via {ActiveTransport}",
+                _ => "WiFi/UDP - Reconnecting..."
+            };
+            Platforms.Android.AuthForegroundService.Instance?.UpdateNotification(text);
+        }
+        catch { }
+#endif
+    }
+
     public void Dispose()
     {
         if (_disposed) return;
@@ -493,17 +688,13 @@ public class AuthListener : IDisposable
     }
 }
 
-/// <summary>
-/// Data for a pending authentication request from a PC.
-/// </summary>
+/// <summary>Data for a pending authentication request from a PC.</summary>
 public class AuthRequest
 {
     public required string PcName { get; init; }
     public required byte[] DeviceIdBytes { get; init; }
     public required byte[] Nonce { get; init; }
     public required byte[] AuthKey { get; init; }
-    /// <summary>UDP source address (null for BT/TCP transports).</summary>
     public IPAddress? FromAddress { get; init; }
-    /// <summary>Which transport this request arrived on.</summary>
     public Protocol.TransportType Transport { get; init; }
 }

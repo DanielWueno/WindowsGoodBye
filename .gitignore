@@ -39,7 +39,7 @@ Desktop.ini
 
 # Legacy project (original third-party code)
 legacy/
-android/
+/android/
 AndroidClient/
 WindowsApp/
 

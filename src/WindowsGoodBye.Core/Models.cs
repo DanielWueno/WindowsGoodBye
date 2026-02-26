@@ -36,6 +36,9 @@ public class DeviceInfo
 
     /// <summary>Last successful authentication time.</summary>
     public DateTime? LastAuthAt { get; set; }
+
+    /// <summary>Firebase Cloud Messaging token for push notifications (optional).</summary>
+    public string? FcmToken { get; set; }
 }
 
 /// <summary>

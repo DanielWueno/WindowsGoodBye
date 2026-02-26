@@ -21,6 +21,7 @@ public class AuthWorker : BackgroundService
     private BluetoothServer? _bt;
     private TcpUsbServer? _tcp;
     private AppDatabase? _db;
+    private FcmPushSender? _fcm;
 
     // Shared state: when a device authenticates, this is set so PipeServer can read it
     internal static volatile string? AuthenticatedPassword = null;
@@ -42,6 +43,11 @@ public class AuthWorker : BackgroundService
         Instance = this;
         _db = new AppDatabase();
         _db.Initialize();
+
+        // Initialize FCM push sender (optional — disabled if not configured)
+        _fcm = new FcmPushSender(_loggerFactory.CreateLogger<FcmPushSender>());
+        if (_fcm.IsAvailable)
+            _logger.LogInformation("FCM push notifications enabled");
 
         // --- Start all transport listeners ---
 
@@ -364,6 +370,13 @@ public class AuthWorker : BackgroundService
             var payload = Convert.ToBase64String(device.DeviceId.ToByteArray());
             var message = Protocol.AuthDiscoverPrefix + payload;
             await SendOnAllTransportsAsync(message, device.LastIpAddress);
+
+            // Also try FCM push to wake the device (in case all transports are down)
+            if (_fcm?.IsAvailable == true && !string.IsNullOrEmpty(device.FcmToken))
+            {
+                _logger.LogDebug("Sending FCM wake push to {Name}", device.FriendlyName);
+                _ = _fcm.SendAuthWakeAsync(device.FcmToken, Environment.MachineName);
+            }
         }
     }
 
