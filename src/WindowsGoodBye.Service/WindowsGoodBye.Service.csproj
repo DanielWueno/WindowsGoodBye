@@ -11,6 +11,7 @@
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.*" />
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="9.0.*" />
     <PackageReference Include="InTheHand.Net.Bluetooth" Version="4.*" />
+    <PackageReference Include="System.Management" Version="10.0.3" />
     <ProjectReference Include="..\WindowsGoodBye.Core\WindowsGoodBye.Core.csproj" />
   </ItemGroup>
 </Project>

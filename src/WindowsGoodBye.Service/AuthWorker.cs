@@ -22,6 +22,7 @@ public class AuthWorker : BackgroundService
     private TcpUsbServer? _tcp;
     private AppDatabase? _db;
     private FcmPushSender? _fcm;
+    private AdbDeviceWatcher? _adbWatcher;
 
     // Shared state: when a device authenticates, this is set so PipeServer can read it
     internal static volatile string? AuthenticatedPassword = null;
@@ -80,11 +81,25 @@ public class AuthWorker : BackgroundService
         _udp.MessageReceived += OnUdpMessageReceived;
         _udp.StartListening();
 
+        // 4. ADB Device Watcher — auto-configures "adb reverse" when a phone is plugged in
+        try
+        {
+            _adbWatcher = new AdbDeviceWatcher(_loggerFactory.CreateLogger<AdbDeviceWatcher>());
+            _adbWatcher.AdbReverseEstablished += OnAdbReverseEstablished;
+            _adbWatcher.DeviceDisconnected += OnAdbDeviceDisconnected;
+            _adbWatcher.Start();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "ADB Device Watcher failed to start: {Msg}", ex.Message);
+        }
+
         _logger.LogInformation(
-            "Transports active — BT: {BT}, TCP/USB: {TCP}, UDP: {UDP}",
+            "Transports active — BT: {BT}, TCP/USB: {TCP}, UDP: {UDP}, ADB-Auto: {ADB}",
             _bt != null && BluetoothServer.IsAvailable ? "YES" : "NO",
             _tcp != null ? "YES" : "NO",
-            "YES");
+            "YES",
+            _adbWatcher != null ? "YES" : "NO");
 
         // Keep alive loop
         while (!stoppingToken.IsCancellationRequested)
@@ -92,10 +107,30 @@ public class AuthWorker : BackgroundService
             await Task.Delay(2000, stoppingToken);
         }
 
+        _adbWatcher?.Stop();
         _bt?.Stop();
         _tcp?.Stop();
         _udp.StopListening();
         _logger.LogInformation("WindowsGoodBye Auth Service stopped.");
+    }
+
+    // --- ADB auto-setup events ---
+
+    private void OnAdbReverseEstablished()
+    {
+        _logger.LogInformation("ADB reverse established — sending auth discovery on TCP/USB");
+        // Trigger device discovery so the phone (just plugged in) gets an auth challenge immediately
+        _ = Task.Run(async () =>
+        {
+            // Small delay to let the TCP connection from the phone come through
+            await Task.Delay(1500);
+            await DiscoverDevicesAsync();
+        });
+    }
+
+    private void OnAdbDeviceDisconnected()
+    {
+        _logger.LogInformation("ADB device disconnected — USB transport no longer available");
     }
 
     // --- UDP transport (fire-and-forget, reply via unicast) ---
