@@ -51,9 +51,48 @@ public class AppDatabase : DbContext
         });
     }
 
-    /// <summary>Ensure the database and tables exist.</summary>
+    /// <summary>Ensure the database and tables exist, and apply any pending schema changes.</summary>
     public void Initialize()
     {
         Database.EnsureCreated();
+        MigrateSchema();
+    }
+
+    /// <summary>
+    /// Lightweight schema migration: adds columns that may be missing after model changes.
+    /// EnsureCreated() does NOT alter existing tables, so we do it manually.
+    /// </summary>
+    private void MigrateSchema()
+    {
+        var conn = Database.GetDbConnection();
+        conn.Open();
+        try
+        {
+            // Check and add FcmToken column to Devices table
+            AddColumnIfMissing(conn, "Devices", "FcmToken", "TEXT");
+        }
+        finally
+        {
+            conn.Close();
+        }
+    }
+
+    private static void AddColumnIfMissing(
+        System.Data.Common.DbConnection conn, string table, string column, string type)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"PRAGMA table_info({table})";
+        using var reader = cmd.ExecuteReader();
+
+        while (reader.Read())
+        {
+            if (string.Equals(reader.GetString(1), column, StringComparison.OrdinalIgnoreCase))
+                return; // Column already exists
+        }
+        reader.Close();
+
+        using var alter = conn.CreateCommand();
+        alter.CommandText = $"ALTER TABLE {table} ADD COLUMN {column} {type}";
+        alter.ExecuteNonQuery();
     }
 }
