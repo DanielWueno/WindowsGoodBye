@@ -37,12 +37,11 @@ Desktop.ini
 *.db-shm
 *.db-wal
 
+# Release output
+release/
+
 # Legacy project (original third-party code)
 legacy/
 /android/
 AndroidClient/
 WindowsApp/
-
-# Temp files
-stop
-WinGBProvider.obj
