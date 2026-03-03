@@ -68,11 +68,19 @@ function Confirm-Admin {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        Write-Host "ERROR: Este instalador requiere privilegios de Administrador." -ForegroundColor Red
-        Write-Host "       Haz clic derecho -> Ejecutar como administrador." -ForegroundColor Yellow
-        Write-Host ""
-        if (-not $Silent) { Read-Host "Presione ENTER para salir" }
-        exit 1
+        Write-Host "  Elevando a Administrador..." -ForegroundColor Yellow
+        # Re-launch self as admin
+        $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)
+        if ($Uninstall) { $args += '-Uninstall' }
+        if ($Silent)    { $args += '-Silent' }
+        try {
+            Start-Process powershell -ArgumentList $args -Verb RunAs -Wait
+        } catch {
+            Write-Host "ERROR: No se pudo elevar a Administrador." -ForegroundColor Red
+            Write-Host "       Haz clic derecho -> Ejecutar como administrador." -ForegroundColor Yellow
+            if (-not $Silent) { Read-Host "Presione ENTER para salir" }
+        }
+        exit
     }
 }
 

@@ -1,10 +1,11 @@
-@echo off
+﻿@echo off
 setlocal
+chcp 65001 >nul 2>&1
 
 REM ──────────────────────────────────────────────
 REM  WindowsGoodBye — Installer Launcher
 REM  Ejecuta el instalador (.exe o .ps1)
-REM  Requiere privilegios de Administrador
+REM  Se auto-eleva a Administrador si es necesario
 REM ──────────────────────────────────────────────
 
 set "DIR=%~dp0"
@@ -17,18 +18,7 @@ if exist "%EXE%" (
     goto :EOF
 )
 
-REM Fallback: ejecutar el PS1 como admin
-chcp 65001 >nul 2>&1
-
-REM Verificar si ya somos admin
-net session >nul 2>&1
-if %errorlevel% neq 0 (
-    echo Solicitando privilegios de administrador...
-    powershell -Command "Start-Process cmd -ArgumentList '/c \"\"%~f0\" %*\"' -Verb RunAs"
-    goto :EOF
-)
-
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "Unblock-File -Path '%PS1%' -ErrorAction SilentlyContinue; & '%PS1%' %*"
+REM Ejecutar el PS1 — el propio script se auto-eleva
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%" %*
 
 endlocal
