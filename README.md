@@ -11,6 +11,16 @@ WindowsGoodBye es un sistema completo que permite usar el lector de huellas de u
 - **TrayApp** (WinForms) para gestionar el pareado y configurar credenciales
 - **App Android** (.NET MAUI) que escucha solicitudes de autenticación y presenta el prompt biométrico
 
+### Características principales
+
+- Desbloqueo por huella dactilar vía Bluetooth, USB o WiFi
+- Auto-reconexión automática al perder conexión
+- Detección automática de dispositivos USB (ADB watcher)
+- Notificaciones push (FCM) para despertar la app Android
+- Solo pide huella cuando la PC está realmente bloqueada (no antes)
+- Servicio de Windows con auto-arranque y recuperación ante fallos
+- Instalador todo-en-uno con soporte para `ps2exe` (genera EXE standalone)
+
 ## Arquitectura
 
 ```
@@ -26,8 +36,8 @@ WindowsGoodBye es un sistema completo que permite usar el lector de huellas de u
 │  │   Windows Service  │◄─┼────────┼──┤  └────────────┘  │  │
 │  │   (.NET 9 Worker)  │  │  BT /  │  │                  │  │
 │  └────────┬───────────┘  │  USB / │  └──────────────────┘  │
-│           │Named Pipe    │  WiFi  │                        │
-│  ┌────────┴───────────┐  │        └────────────────────────┘
+│           │Named Pipe    │  WiFi/ │                        │
+│  ┌────────┴───────────┐  │  FCM   └────────────────────────┘
 │  │    TrayApp         │  │
 │  │   (WinForms)       │  │
 │  └────────────────────┘  │
@@ -36,13 +46,14 @@ WindowsGoodBye es un sistema completo que permite usar el lector de huellas de u
 
 ## Transportes de Comunicación
 
-El sistema soporta tres métodos de comunicación (en orden de prioridad):
+El sistema soporta tres métodos de comunicación simultáneamente (con auto-reconexión):
 
 | Prioridad | Transporte                | Puerto/Canal                                      | Descripción                    |
 | --------- | ------------------------- | ------------------------------------------------- | ------------------------------ |
 | 1         | **Bluetooth RFCOMM**      | UUID `a1b2c3d4-...`                               | Sin necesidad de WiFi ni cable |
-| 2         | **TCP/USB** (ADB reverse) | `localhost:26820`                                 | Conexión por cable USB         |
+| 2         | **TCP/USB** (ADB reverse) | `localhost:26820`                                 | Conexión por cable USB (auto-detectado) |
 | 3         | **UDP WiFi**              | Multicast `225.67.76.67:26817` / Unicast `:26818` | Fallback por red local         |
+| Wake-up   | **FCM Push**              | Firebase Cloud Messaging                          | Despierta la app si está dormida |
 
 ## Flujo de Funcionamiento
 
@@ -57,46 +68,58 @@ El sistema soporta tres métodos de comunicación (en orden de prioridad):
 
 1. Se bloquea la PC → aparece el tile **"WindowsGoodBye"** en la pantalla de login
 2. El usuario selecciona el tile → el Credential Provider se conecta al Servicio
-3. El Servicio envía `auth_discover` al teléfono (por BT / USB / WiFi)
-4. El teléfono responde `auth_alive` → el Servicio envía un challenge cifrado (`auth_req`)
-5. El teléfono muestra el **prompt de huella** → el usuario toca el sensor
-6. El teléfono responde con un HMAC del nonce (`auth_resp`)
-7. El Servicio verifica el HMAC y envía las credenciales al Credential Provider
-8. **La PC se desbloquea automáticamente**
+3. El Servicio detecta que la PC está bloqueada (`IsAuthWaiting`) y envía un challenge
+4. Si la app está dormida, se envía push FCM → la app se despierta
+5. El Servicio envía `auth_discover` al teléfono (por BT / USB / WiFi)
+6. El teléfono responde `auth_alive` → el Servicio envía un challenge cifrado (`auth_req`)
+7. El teléfono muestra el **prompt de huella** → el usuario toca el sensor
+8. El teléfono responde con un HMAC del nonce (`auth_resp`)
+9. El Servicio verifica el HMAC y envía las credenciales al Credential Provider
+10. **La PC se desbloquea automáticamente**
 
 ## Estructura del Proyecto
 
 ```
 WindowsGoodBye/
 ├── src/
-│   ├── WindowsGoodBye.Core/              # Biblioteca compartida
+│   ├── WindowsGoodBye.Core/              # Biblioteca compartida (.NET 9)
 │   │   ├── Protocol.cs                   # Constantes del protocolo
 │   │   ├── CryptoUtils.cs               # AES-256-CBC, HMAC-SHA256, DPAPI
 │   │   ├── StreamTransport.cs            # Framing length-prefixed para BT/TCP
 │   │   ├── UdpManager.cs                # Multicast/Unicast UDP
-│   │   ├── AppDatabase.cs               # EF Core SQLite (PC)
+│   │   ├── PairingSession.cs            # Lógica de pareado PC↔Android
+│   │   ├── AppDatabase.cs               # SQLite con migraciones automáticas
 │   │   └── Models.cs                    # DeviceInfo, AuthRecord, StoredCredential
 │   │
 │   ├── WindowsGoodBye.Service/           # Servicio de Windows (.NET 9 Worker)
-│   │   ├── AuthWorker.cs                # Lógica principal de autenticación
+│   │   ├── Program.cs                   # Entry point + CLI (install/uninstall/start)
+│   │   ├── AuthWorker.cs                # Lógica principal + IsAuthWaiting gate
 │   │   ├── PipeServer.cs               # Named pipe ↔ Credential Provider
 │   │   ├── AdminPipeServer.cs           # Named pipe ↔ TrayApp
 │   │   ├── BluetoothServer.cs           # Servidor Bluetooth RFCOMM
-│   │   └── TcpUsbServer.cs             # Servidor TCP para USB
+│   │   ├── TcpUsbServer.cs             # Servidor TCP para USB
+│   │   ├── AdbDeviceWatcher.cs          # Auto-detección USB (WMI events)
+│   │   └── FcmPushSender.cs            # Push notifications vía FCM
 │   │
 │   ├── WindowsGoodBye.TrayApp/          # App de bandeja del sistema (WinForms)
+│   │   ├── Program.cs                   # Entry point
 │   │   └── TrayApplicationContext.cs    # Pareado, credenciales, gestión
 │   │
 │   ├── WindowsGoodBye.Mobile/           # App Android (.NET MAUI)
 │   │   ├── MainPage.xaml.cs             # UI principal, manejo de auth
 │   │   ├── QrScanPage.xaml.cs           # Escáner QR para pareado
+│   │   ├── Data/
+│   │   │   └── MobileDatabase.cs        # SQLite local del teléfono
 │   │   ├── Services/
-│   │   │   ├── AuthListener.cs          # Listener multi-transporte
+│   │   │   ├── AuthListener.cs          # Listener multi-transporte + auto-reconexión
 │   │   │   ├── TcpUsbTransport.cs       # Transporte TCP/USB
-│   │   │   └── BiometricService.cs      # Wrapper de BiometricPrompt
+│   │   │   └── IBiometricService.cs     # Interfaz de biometría
 │   │   └── Platforms/Android/
 │   │       ├── AuthForegroundService.cs # Servicio Android foreground
-│   │       └── BluetoothTransport.cs    # Transporte Bluetooth Android
+│   │       ├── BluetoothTransport.cs    # Transporte Bluetooth Android
+│   │       ├── AndroidBiometricService.cs # BiometricPrompt wrapper
+│   │       ├── FcmService.cs            # Receptor de push FCM
+│   │       └── BootReceiver.cs          # Auto-inicio al arrancar Android
 │   │
 │   └── WindowsGoodBye.CredentialProvider/ # Credential Provider (C++ COM DLL)
 │       ├── WinGBProvider.cpp            # Implementación ICredentialProvider
@@ -106,16 +129,14 @@ WindowsGoodBye/
 │       └── provider.def                 # Exports de la DLL
 │
 ├── scripts/
-│   ├── build-all.ps1                    # Compilación completa (.NET + C++)
-│   ├── install-service.ps1              # Instalación como servicio de Windows
-│   ├── register-credprov.ps1            # Registro del Credential Provider
-│   ├── register-firewall.ps1            # Reglas de firewall
-│   └── setup-usb.ps1                   # Configuración ADB reverse
+│   ├── Build-Release.ps1                # Compila todo y genera release/
+│   ├── WindowsGoodBye-Setup.ps1         # Instalador/desinstalador todo-en-uno
+│   └── WindowsGoodBye-Setup.bat         # Launcher con elevación de admin
 │
 ├── tools/
 │   └── TestAuthClient/                  # Cliente de prueba (simula CredProvider)
 │
-└── WindowsGoodBye.sln                   # Solución .NET
+└── WindowsGoodBye.sln
 ```
 
 ## Requisitos
@@ -123,89 +144,108 @@ WindowsGoodBye/
 ### PC (Windows)
 
 - Windows 10/11 (x64)
-- .NET 9 SDK
-- Visual Studio 2022+ con **"Desktop development with C++"** (para compilar el Credential Provider)
+- .NET 9 SDK (solo para compilar; el release es self-contained)
+- Visual Studio con **"Desktop development with C++"** (solo para compilar el Credential Provider)
 - Bluetooth (opcional, para transporte BT)
-- ADB (opcional, para transporte USB)
 
 ### Android
 
 - Android 9.0+ (API 28+)
 - Sensor de huellas o biometría
-- .NET MAUI workload instalado para compilar
+- .NET MAUI workload instalado (solo para compilar)
 
-## Instalación
+## Instalación rápida (release)
 
-### 1. Compilar todo
+Si tienes el paquete `release/` ya compilado:
 
 ```powershell
-# Clonar el repositorio
-git clone https://github.com/<tu-usuario>/WindowsGoodBye.git
+# Ejecutar el instalador como Administrador
+.\WindowsGoodBye-Setup.bat
+
+# O directamente:
+.\WindowsGoodBye-Setup.exe
+```
+
+El instalador realiza automáticamente:
+
+1. Copia archivos a `%ProgramFiles%\WindowsGoodBye`
+2. Instala el servicio de Windows (auto-start + recuperación ante fallos)
+3. Registra el Credential Provider (DLL → System32 + registry)
+4. Configura reglas de firewall (UDP 26817/26818, TCP 26820)
+5. Crea acceso directo de TrayApp en inicio
+6. Opcionalmente instala el APK en Android vía ADB
+
+Para desinstalar:
+
+```powershell
+.\WindowsGoodBye-Setup.exe -Uninstall
+```
+
+## Compilación desde código fuente
+
+### 1. Generar release completo
+
+```powershell
+git clone https://github.com/DanielWueno/WindowsGoodBye.git
 cd WindowsGoodBye
 
+# Compilar todo y empaquetar en release/
+.\scripts\Build-Release.ps1
+```
+
+Flags disponibles:
+
+| Flag                      | Efecto                                 |
+| ------------------------- | -------------------------------------- |
+| `-SkipAndroid`            | No compila el APK                      |
+| `-SkipCredentialProvider` | No compila la DLL C++                  |
+| `-SkipExeWrapper`         | No genera el EXE con ps2exe            |
+
+### 2. Generar el EXE standalone del instalador
+
+```powershell
+# Instalar ps2exe (una sola vez)
+Install-Module ps2exe -Scope CurrentUser
+
+# Compilar todo incluyendo el EXE wrapper
+.\scripts\Build-Release.ps1
+```
+
+### 3. Solo compilar para desarrollo
+
+```powershell
 # Compilar solución .NET
 dotnet build WindowsGoodBye.sln
 
-# Compilar Credential Provider (requiere VS C++ tools)
-.\scripts\build-all.ps1
-```
-
-### 2. Registrar el Credential Provider (como Admin)
-
-```powershell
-# Copia la DLL a System32 y registra el COM CLSID
-.\scripts\register-credprov.ps1
-```
-
-### 3. Configurar Firewall (como Admin)
-
-```powershell
-.\scripts\register-firewall.ps1
-```
-
-### 4. Instalar como servicio de Windows (opcional)
-
-```powershell
-# Para ejecución manual:
+# Ejecutar servicio manualmente
 dotnet run --project src/WindowsGoodBye.Service
 
-# Para instalar como servicio de Windows (como Admin):
-.\scripts\install-service.ps1
-```
+# Ejecutar TrayApp
+dotnet run --project src/WindowsGoodBye.TrayApp
 
-### 5. Instalar la app en Android
-
-```powershell
-# Conectar dispositivo Android por USB
+# Instalar APK en dispositivo conectado
 dotnet build src/WindowsGoodBye.Mobile -t:Install -f net9.0-android
-```
-
-### 6. Configurar USB (opcional)
-
-```powershell
-# Configura ADB reverse para comunicación USB
-.\scripts\setup-usb.ps1
-# O manualmente:
-adb reverse tcp:26820 tcp:26820
 ```
 
 ## Uso
 
 ### Primer uso — Pareado
 
-1. Ejecutar el **Servicio**: `dotnet run --project src/WindowsGoodBye.Service`
-2. Ejecutar el **TrayApp**: `dotnet run --project src/WindowsGoodBye.TrayApp`
-3. Click derecho en el icono de la bandeja → **"Pair New Device"**
+1. Asegurar que el **Servicio** está corriendo
+2. Abrir el **TrayApp** (icono en la bandeja del sistema)
+3. Click derecho → **"Pair New Device"**
 4. En el teléfono, abrir la app → **"Pair New PC"** → escanear el QR
-5. Una vez pareado, click derecho → **"Set Windows Password"** → ingresar credenciales
+5. Click derecho → **"Set Windows Password"** → ingresar credenciales
 
 ### Desbloqueo diario
 
-1. Asegurar que el Servicio está corriendo (como servicio de Windows o manualmente)
-2. Asegurar que la app Android tiene el servicio de escucha activo
-3. Bloquear la PC (`Win + L`)
-4. En la pantalla de bloqueo → seleccionar tile **"WindowsGoodBye"**
-5. Tocar el sensor de huellas en el teléfono → **PC desbloqueada**
+1. Asegurar que la app Android tiene el servicio de escucha activo
+2. Bloquear la PC (`Win + L`)
+3. En la pantalla de bloqueo → seleccionar tile **"WindowsGoodBye"**
+4. Tocar el sensor de huellas en el teléfono → **PC desbloqueada**
+
+> **Nota:** El servicio de Windows arranca automáticamente con el sistema.
+> La app Android se mantiene activa con un foreground service y se reinicia al arrancar el teléfono.
 
 ## Seguridad
 
@@ -213,10 +253,11 @@ adb reverse tcp:26820 tcp:26820
 | ---------------------------- | ------------------------------------------------------- |
 | Pareado                      | Intercambio de claves via QR (canal visual seguro)      |
 | Cifrado de transporte        | AES-256-CBC con clave única por dispositivo             |
-| Autenticación                | Challenge-response con HMAC-SHA256                      |
+| Autenticación                | Challenge-response con HMAC-SHA256 + nonce anti-replay  |
 | Almacenamiento de contraseña | DPAPI (`DataProtectionScope.LocalMachine`)              |
 | Named Pipes                  | ACLs con PipeSecurity (Everyone ReadWrite para IPC)     |
 | Biometría                    | `Android.Hardware.Biometrics.BiometricPrompt` (API 28+) |
+| Gate de autenticación        | Solo pide huella cuando la PC está bloqueada (`IsAuthWaiting`) |
 
 ### Modelo de amenazas
 
@@ -224,49 +265,39 @@ adb reverse tcp:26820 tcp:26820
 - Las claves de pareado nunca se transmiten después del pareado inicial (solo via QR)
 - Cada sesión de autenticación usa un nonce aleatorio (anti-replay)
 - La respuesta HMAC es verificada por el servicio antes de enviar credenciales
+- La autenticación biométrica solo se solicita cuando el Credential Provider está activo (PC bloqueada)
 
 ## Tecnologías
 
 - **.NET 9** — Core, Service, TrayApp
 - **.NET MAUI** — App Android (target `net9.0-android`, minSdk 28)
 - **C++17** — Credential Provider (COM DLL)
-- **EF Core + SQLite** — Base de datos local
+- **SQLite** — Base de datos local (con migraciones automáticas)
 - **InTheHand.Net.Bluetooth v4** — Bluetooth RFCOMM en Windows
 - **ZXing.Net.Maui** — Escáner QR en Android
+- **Firebase Cloud Messaging** — Push notifications para wake-up
 - **AES-256-CBC** / **HMAC-SHA256** / **DPAPI** — Criptografía
+- **ps2exe** — Generación de EXE standalone del instalador
 
 ## Scripts
 
-| Script                  | Descripción                                 | Requiere Admin |
-| ----------------------- | ------------------------------------------- | :------------: |
-| `build-all.ps1`         | Compila .NET + C++ CredProvider             |       No       |
-| `install-service.ps1`   | Instala/desinstala servicio de Windows      |       Sí       |
-| `register-credprov.ps1` | Registra/desregistra el Credential Provider |       Sí       |
-| `register-firewall.ps1` | Crea reglas de firewall (UDP/TCP)           |       Sí       |
-| `setup-usb.ps1`         | Configura ADB reverse para USB              |       No       |
-
-## Desinstalación
-
-```powershell
-# Desregistrar Credential Provider (como Admin)
-.\scripts\register-credprov.ps1 -Unregister
-
-# Desinstalar servicio (como Admin)
-.\scripts\install-service.ps1 -Uninstall
-
-# Eliminar datos
-Remove-Item "$env:ProgramData\WindowsGoodBye" -Recurse -Force
-```
+| Script                       | Descripción                                    | Requiere Admin |
+| ---------------------------- | ---------------------------------------------- | :------------: |
+| `Build-Release.ps1`         | Compila todo y empaqueta en `release/`          |       No       |
+| `WindowsGoodBye-Setup.ps1`  | Instalador/desinstalador todo-en-uno (7 pasos)  |       Sí       |
+| `WindowsGoodBye-Setup.bat`  | Launcher del instalador con elevación de admin   |       No       |
 
 ## Solución de Problemas
 
 | Problema                                       | Solución                                                                                                    |
 | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| El tile no aparece en la pantalla de bloqueo   | Verificar que `register-credprov.ps1` se ejecutó como Admin. Reiniciar la PC.                               |
+| El tile no aparece en la pantalla de bloqueo   | Verificar que el instalador se ejecutó como Admin. Reiniciar la PC.                                         |
 | Timeout al esperar huella                      | Verificar que la app Android está activa y el transporte conectado (USB/BT/WiFi).                           |
 | "No stored credentials" en el log del servicio | Usar TrayApp → "Set Windows Password" para guardar las credenciales.                                        |
-| Pipe UnauthorizedAccessException               | El servicio corre como SYSTEM pero el TrayApp como usuario. Verificar que se usan las ACLs de PipeSecurity. |
-| ADB reverse no funciona                        | Ejecutar `adb reverse tcp:26820 tcp:26820`. Verificar que el dispositivo aparece en `adb devices`.          |
+| Pide huella sin que la PC esté bloqueada       | Verificar que el servicio está actualizado (debe tener `IsAuthWaiting` gate).                               |
+| Pipe UnauthorizedAccessException               | El servicio corre como SYSTEM pero el TrayApp como usuario. Verificar ACLs de PipeSecurity.                 |
+| El servicio no inicia tras reinicio            | Ejecutar `WindowsGoodBye-Setup.ps1` o `sc.exe query WindowsGoodByeService` para verificar el registro.     |
+| ADB no detecta el teléfono                     | Verificar que USB debugging está activado y el dispositivo aparece en `adb devices`.                        |
 
 ## Licencia
 
