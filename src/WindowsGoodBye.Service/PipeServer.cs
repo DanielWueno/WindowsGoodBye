@@ -75,6 +75,12 @@ public class PipeServer : BackgroundService
             {
                 _logger.LogInformation("Credential provider is waiting for auth...");
 
+                // Signal that the lock screen is active — allow auth challenges
+                AuthWorker.IsAuthWaiting = true;
+                // Reset any stale auth from previous sessions
+                AuthWorker.AuthenticatedPassword = null;
+                AuthWorker.AuthEvent.Reset();
+
                 // Trigger device discovery
                 // The AuthWorker will handle responses and set AuthEvent
                 var db = new AppDatabase();
@@ -112,16 +118,19 @@ public class PipeServer : BackgroundService
                     await WritePipeAsync(pipe, Protocol.PipeCmd_AuthReady + "\n" + AuthWorker.AuthenticatedPassword, ct);
                     AuthWorker.AuthenticatedPassword = null;
                     AuthWorker.AuthEvent.Reset();
+                    AuthWorker.IsAuthWaiting = false;
                 }
                 else
                 {
                     _logger.LogInformation("Auth timeout or cancelled");
                     await WritePipeAsync(pipe, "TIMEOUT", ct);
+                    AuthWorker.IsAuthWaiting = false;
                 }
             }
             else if (command == Protocol.PipeCmd_Cancel)
             {
                 _logger.LogInformation("Credential provider cancelled auth request");
+                AuthWorker.IsAuthWaiting = false;
             }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

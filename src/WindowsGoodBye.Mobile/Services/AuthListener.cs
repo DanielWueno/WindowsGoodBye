@@ -169,7 +169,8 @@ public class AuthListener : IDisposable
                     IsTransportConnected = true;
                     TransportStateChanged?.Invoke(ActiveTransport, true);
                     System.Diagnostics.Debug.WriteLine($"[AuthListener] Connected via Bluetooth to {address}");
-                    await SendAliveForAllPcsAsync(SendBluetoothAsync);
+                    // Don't send auth_alive proactively — wait for PC to send auth_discover
+                    // when the lock screen is active. This prevents premature biometric prompts.
                     return true;
                 }
                 else
@@ -207,7 +208,7 @@ public class AuthListener : IDisposable
                 IsTransportConnected = true;
                 TransportStateChanged?.Invoke(ActiveTransport, true);
                 System.Diagnostics.Debug.WriteLine("[AuthListener] Connected via TCP/USB");
-                await SendAliveForAllPcsAsync(SendTcpAsync);
+                // Don't send auth_alive proactively — wait for PC to send auth_discover
                 return true;
             }
             else

@@ -28,6 +28,13 @@ public class AuthWorker : BackgroundService
     internal static volatile string? AuthenticatedPassword = null;
     internal static readonly ManualResetEventSlim AuthEvent = new(false);
 
+    /// <summary>
+    /// True when the credential provider is connected and waiting for auth.
+    /// Only when this is true should we send auth challenges to phones.
+    /// Prevents premature auth prompts when PC is not locked.
+    /// </summary>
+    internal static volatile bool IsAuthWaiting = false;
+
     /// <summary>Singleton reference so PipeServer can send messages on active transports.</summary>
     internal static AuthWorker? Instance { get; private set; }
 
@@ -298,6 +305,14 @@ public class AuthWorker : BackgroundService
             _db!.SaveChanges();
         }
 
+        // Only send an auth challenge if the credential provider is actively waiting
+        // (i.e., the PC is locked). This prevents premature biometric prompts.
+        if (!IsAuthWaiting)
+        {
+            _logger.LogDebug("Device {Name} alive but PC not locked — skipping challenge", device.FriendlyName);
+            return;
+        }
+
         // Send auth challenge: nonce encrypted with device key
         var nonce = CryptoUtils.GenerateNonce(32);
 
@@ -370,12 +385,17 @@ public class AuthWorker : BackgroundService
                 AuthEvent.Set();
                 _logger.LogInformation("Auth signal sent to credential provider");
 
-                // Auto-reset after 30 seconds
+                // Auto-reset after 10 seconds if no one consumed the auth
+                // (safety net — PipeServer resets immediately on consumption)
                 Task.Run(async () =>
                 {
-                    await Task.Delay(30000);
-                    AuthenticatedPassword = null;
-                    AuthEvent.Reset();
+                    await Task.Delay(10000);
+                    if (AuthenticatedPassword != null)
+                    {
+                        _logger.LogDebug("Auth result expired (not consumed within 10s)");
+                        AuthenticatedPassword = null;
+                        AuthEvent.Reset();
+                    }
                 });
             }
             catch (Exception ex)
