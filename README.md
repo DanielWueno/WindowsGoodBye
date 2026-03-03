@@ -48,12 +48,12 @@ WindowsGoodBye es un sistema completo que permite usar el lector de huellas de u
 
 El sistema soporta tres métodos de comunicación simultáneamente (con auto-reconexión):
 
-| Prioridad | Transporte                | Puerto/Canal                                      | Descripción                    |
-| --------- | ------------------------- | ------------------------------------------------- | ------------------------------ |
-| 1         | **Bluetooth RFCOMM**      | UUID `a1b2c3d4-...`                               | Sin necesidad de WiFi ni cable |
+| Prioridad | Transporte                | Puerto/Canal                                      | Descripción                             |
+| --------- | ------------------------- | ------------------------------------------------- | --------------------------------------- |
+| 1         | **Bluetooth RFCOMM**      | UUID `a1b2c3d4-...`                               | Sin necesidad de WiFi ni cable          |
 | 2         | **TCP/USB** (ADB reverse) | `localhost:26820`                                 | Conexión por cable USB (auto-detectado) |
-| 3         | **UDP WiFi**              | Multicast `225.67.76.67:26817` / Unicast `:26818` | Fallback por red local         |
-| Wake-up   | **FCM Push**              | Firebase Cloud Messaging                          | Despierta la app si está dormida |
+| 3         | **UDP WiFi**              | Multicast `225.67.76.67:26817` / Unicast `:26818` | Fallback por red local                  |
+| Wake-up   | **FCM Push**              | Firebase Cloud Messaging                          | Despierta la app si está dormida        |
 
 ## Flujo de Funcionamiento
 
@@ -195,11 +195,11 @@ cd WindowsGoodBye
 
 Flags disponibles:
 
-| Flag                      | Efecto                                 |
-| ------------------------- | -------------------------------------- |
-| `-SkipAndroid`            | No compila el APK                      |
-| `-SkipCredentialProvider` | No compila la DLL C++                  |
-| `-SkipExeWrapper`         | No genera el EXE con ps2exe            |
+| Flag                      | Efecto                      |
+| ------------------------- | --------------------------- |
+| `-SkipAndroid`            | No compila el APK           |
+| `-SkipCredentialProvider` | No compila la DLL C++       |
+| `-SkipExeWrapper`         | No genera el EXE con ps2exe |
 
 ### 2. Generar el EXE standalone del instalador
 
@@ -249,14 +249,14 @@ dotnet build src/WindowsGoodBye.Mobile -t:Install -f net9.0-android
 
 ## Seguridad
 
-| Aspecto                      | Implementación                                          |
-| ---------------------------- | ------------------------------------------------------- |
-| Pareado                      | Intercambio de claves via QR (canal visual seguro)      |
-| Cifrado de transporte        | AES-256-CBC con clave única por dispositivo             |
-| Autenticación                | Challenge-response con HMAC-SHA256 + nonce anti-replay  |
-| Almacenamiento de contraseña | DPAPI (`DataProtectionScope.LocalMachine`)              |
-| Named Pipes                  | ACLs con PipeSecurity (Everyone ReadWrite para IPC)     |
-| Biometría                    | `Android.Hardware.Biometrics.BiometricPrompt` (API 28+) |
+| Aspecto                      | Implementación                                                 |
+| ---------------------------- | -------------------------------------------------------------- |
+| Pareado                      | Intercambio de claves via QR (canal visual seguro)             |
+| Cifrado de transporte        | AES-256-CBC con clave única por dispositivo                    |
+| Autenticación                | Challenge-response con HMAC-SHA256 + nonce anti-replay         |
+| Almacenamiento de contraseña | DPAPI (`DataProtectionScope.LocalMachine`)                     |
+| Named Pipes                  | ACLs con PipeSecurity (Everyone ReadWrite para IPC)            |
+| Biometría                    | `Android.Hardware.Biometrics.BiometricPrompt` (API 28+)        |
 | Gate de autenticación        | Solo pide huella cuando la PC está bloqueada (`IsAuthWaiting`) |
 
 ### Modelo de amenazas
@@ -281,23 +281,23 @@ dotnet build src/WindowsGoodBye.Mobile -t:Install -f net9.0-android
 
 ## Scripts
 
-| Script                       | Descripción                                    | Requiere Admin |
-| ---------------------------- | ---------------------------------------------- | :------------: |
-| `Build-Release.ps1`         | Compila todo y empaqueta en `release/`          |       No       |
-| `WindowsGoodBye-Setup.ps1`  | Instalador/desinstalador todo-en-uno (7 pasos)  |       Sí       |
-| `WindowsGoodBye-Setup.bat`  | Launcher del instalador con elevación de admin   |       No       |
+| Script                     | Descripción                                    | Requiere Admin |
+| -------------------------- | ---------------------------------------------- | :------------: |
+| `Build-Release.ps1`        | Compila todo y empaqueta en `release/`         |       No       |
+| `WindowsGoodBye-Setup.ps1` | Instalador/desinstalador todo-en-uno (7 pasos) |       Sí       |
+| `WindowsGoodBye-Setup.bat` | Launcher del instalador con elevación de admin |       No       |
 
 ## Solución de Problemas
 
-| Problema                                       | Solución                                                                                                    |
-| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| El tile no aparece en la pantalla de bloqueo   | Verificar que el instalador se ejecutó como Admin. Reiniciar la PC.                                         |
-| Timeout al esperar huella                      | Verificar que la app Android está activa y el transporte conectado (USB/BT/WiFi).                           |
-| "No stored credentials" en el log del servicio | Usar TrayApp → "Set Windows Password" para guardar las credenciales.                                        |
-| Pide huella sin que la PC esté bloqueada       | Verificar que el servicio está actualizado (debe tener `IsAuthWaiting` gate).                               |
-| Pipe UnauthorizedAccessException               | El servicio corre como SYSTEM pero el TrayApp como usuario. Verificar ACLs de PipeSecurity.                 |
-| El servicio no inicia tras reinicio            | Ejecutar `WindowsGoodBye-Setup.ps1` o `sc.exe query WindowsGoodByeService` para verificar el registro.     |
-| ADB no detecta el teléfono                     | Verificar que USB debugging está activado y el dispositivo aparece en `adb devices`.                        |
+| Problema                                       | Solución                                                                                               |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| El tile no aparece en la pantalla de bloqueo   | Verificar que el instalador se ejecutó como Admin. Reiniciar la PC.                                    |
+| Timeout al esperar huella                      | Verificar que la app Android está activa y el transporte conectado (USB/BT/WiFi).                      |
+| "No stored credentials" en el log del servicio | Usar TrayApp → "Set Windows Password" para guardar las credenciales.                                   |
+| Pide huella sin que la PC esté bloqueada       | Verificar que el servicio está actualizado (debe tener `IsAuthWaiting` gate).                          |
+| Pipe UnauthorizedAccessException               | El servicio corre como SYSTEM pero el TrayApp como usuario. Verificar ACLs de PipeSecurity.            |
+| El servicio no inicia tras reinicio            | Ejecutar `WindowsGoodBye-Setup.ps1` o `sc.exe query WindowsGoodByeService` para verificar el registro. |
+| ADB no detecta el teléfono                     | Verificar que USB debugging está activado y el dispositivo aparece en `adb devices`.                   |
 
 ## Licencia
 
