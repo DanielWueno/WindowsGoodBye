@@ -81,25 +81,37 @@ public class PipeServer : BackgroundService
                 AuthWorker.AuthenticatedPassword = null;
                 AuthWorker.AuthEvent.Reset();
 
-                // Trigger device discovery
-                // The AuthWorker will handle responses and set AuthEvent
-                var db = new AppDatabase();
+                using var db = new AppDatabase();
                 var devices = db.Devices.Where(d => d.Enabled).ToList();
                 if (devices.Count == 0)
                 {
                     _logger.LogWarning("No paired devices found");
                     await WritePipeAsync(pipe, "NO_DEVICES", ct);
+                    AuthWorker.IsAuthWaiting = false;
                     return;
                 }
 
-                // Send discovery to all devices via ALL active transports
+                // Progress messages for the credential provider tile — see docs/plan_push_auth_v2.md,
+                // "📡 FCM: Manejo de Fallos" / "🛡️ Defensa contra Push Fatigue": STATUS:searching,
+                // STATUS:push_sent:<name>, STATUS:code:<NN>, STATUS:timeout, STATUS:blocked:<reason>.
+                // Parsing these on the C++ side is Fase 9 — here we just make sure something is on the
+                // wire for it to consume; unrecognized STATUS values should be safely ignorable by the CP.
+                async Task SendStatusAsync(string status)
+                {
+                    try { await WritePipeAsync(pipe, "STATUS:" + status, ct); }
+                    catch { /* CP may have disconnected — the outer auth flow doesn't depend on this */ }
+                }
+
+                AuthRaceOutcome outcome;
                 if (AuthWorker.Instance != null)
                 {
-                    await AuthWorker.Instance.DiscoverDevicesAsync();
+                    // RunAuthRaceAsync (Fase 3) orchestrates Ruta A/B/C in parallel and awaits the
+                    // legacy AuthEvent asynchronously (no blocking .Wait()) internally.
+                    outcome = await AuthWorker.Instance.RunAuthRaceAsync(SendStatusAsync, ct);
                 }
                 else
                 {
-                    // Fallback: UDP only
+                    // Fallback: UDP only (AuthWorker not started — shouldn't normally happen)
                     using var udp = new UdpManager();
                     foreach (var device in devices)
                     {
@@ -107,25 +119,25 @@ public class PipeServer : BackgroundService
                         var message = Protocol.AuthDiscoverPrefix + payload;
                         await udp.SendToDeviceAsync(message, device.LastIpAddress);
                     }
+
+                    var signaled = await WaitAuthEventAsync(TimeSpan.FromSeconds(60), ct);
+                    outcome = new AuthRaceOutcome(signaled);
                 }
 
-                // Wait for auth (up to 60 seconds)
-                var authReceived = AuthWorker.AuthEvent.Wait(60_000, ct);
-
-                if (authReceived && AuthWorker.AuthenticatedPassword != null)
+                if (outcome.Success && AuthWorker.AuthenticatedPassword != null)
                 {
                     _logger.LogInformation("Sending auth credentials to credential provider");
                     await WritePipeAsync(pipe, Protocol.PipeCmd_AuthReady + "\n" + AuthWorker.AuthenticatedPassword, ct);
                     AuthWorker.AuthenticatedPassword = null;
                     AuthWorker.AuthEvent.Reset();
-                    AuthWorker.IsAuthWaiting = false;
                 }
                 else
                 {
-                    _logger.LogInformation("Auth timeout or cancelled");
+                    _logger.LogInformation("Auth timeout, rejected, or cancelled");
                     await WritePipeAsync(pipe, "TIMEOUT", ct);
-                    AuthWorker.IsAuthWaiting = false;
                 }
+
+                AuthWorker.IsAuthWaiting = false;
             }
             else if (command == Protocol.PipeCmd_Cancel)
             {
@@ -144,5 +156,34 @@ public class PipeServer : BackgroundService
         var data = Encoding.UTF8.GetBytes(message);
         await pipe.WriteAsync(data, ct);
         await pipe.FlushAsync(ct);
+    }
+
+    /// <summary>
+    /// Non-blocking wait on <see cref="AuthWorker.AuthEvent"/> for the rare fallback path where
+    /// <see cref="AuthWorker.Instance"/> isn't available. Mirrors the same WaitHandle-to-Task bridge
+    /// used in <c>AuthWorker.WaitOneAsync</c> — replaces the previous blocking
+    /// <c>AuthWorker.AuthEvent.Wait(60_000, ct)</c> call (docs/plan_push_auth_v2.md, Fase 3 fix).
+    /// </summary>
+    private static Task<bool> WaitAuthEventAsync(TimeSpan timeout, CancellationToken ct)
+    {
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var registeredHandle = ThreadPool.RegisterWaitForSingleObject(
+            AuthWorker.AuthEvent.WaitHandle,
+            (state, timedOut) => ((TaskCompletionSource<bool>)state!).TrySetResult(!timedOut),
+            tcs, timeout, executeOnlyOnce: true);
+        var ctRegistration = ct.Register(() => tcs.TrySetCanceled(ct));
+
+        return Await();
+
+        async Task<bool> Await()
+        {
+            try { return await tcs.Task; }
+            catch (OperationCanceledException) { return false; }
+            finally
+            {
+                registeredHandle.Unregister(null);
+                ctRegistration.Dispose();
+            }
+        }
     }
 }

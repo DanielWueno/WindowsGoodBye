@@ -22,6 +22,16 @@ public class TcpUsbServer : IDisposable
     /// <summary>Fired when a message is received from a TCP client. Includes a reply callback.</summary>
     public event Action<string, Func<string, Task>>? MessageReceived;
 
+    /// <summary>
+    /// Whether at least one TCP/USB client currently has an open stream. Used by
+    /// <c>AuthWorker.HasActiveDirectTransport</c> (Fase 3 — "hay transporte directo activo" in the
+    /// hybrid-mode decision algorithm, docs/plan_push_auth_v2.md).
+    /// </summary>
+    public bool HasActiveConnections
+    {
+        get { lock (_streamsLock) return _activeStreams.Count > 0; }
+    }
+
     public TcpUsbServer(ILogger<TcpUsbServer> logger)
     {
         _logger = logger;
