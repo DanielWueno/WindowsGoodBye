@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- RelayServer (WindowsGoodBye.Service) needs the ASP.NET Core shared framework at runtime;
+         FrameworkReference does not flow transitively for runtimeconfig.json generation of the
+         top-level test host, so it must be declared here too, not just in the referenced project. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.*" />
+    <PackageReference Include="xunit" Version="2.*" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\WindowsGoodBye.Core\WindowsGoodBye.Core.csproj" />
+    <ProjectReference Include="..\..\src\WindowsGoodBye.Service\WindowsGoodBye.Service.csproj" />
+  </ItemGroup>
+
+</Project>
