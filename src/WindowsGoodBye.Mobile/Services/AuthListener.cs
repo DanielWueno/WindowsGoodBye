@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -57,8 +58,28 @@ public class AuthListener : IDisposable
     /// <summary>Whether the current transport is connected (BT/TCP have active streams).</summary>
     public bool IsTransportConnected { get; private set; }
 
-    private static AuthListener? _instance;
-    public static AuthListener Instance => _instance ??= new AuthListener();
+    // Fase 8 (docs/plan_push_auth_v2.md): thread-safety fix. The previous
+    // "_instance ??= new AuthListener()" pattern is a classic double-checked-without-a-lock race —
+    // AuthListener is reached from several independent entry points that can legitimately run
+    // concurrently on first access (FcmService.OnMessageReceived on FCM's own thread pool,
+    // AuthForegroundService.OnStartCommand on the main thread, MainPage's own startup path, etc.).
+    // Two threads racing through "_instance ??= new AuthListener()" can each observe _instance == null,
+    // each construct a NEW AuthListener, and then race on which one wins the final field write — the
+    // loser's instance (and any UDP sockets/timers it may have already started) is silently leaked,
+    // and worse, some callers could end up holding a reference to the abandoned instance if they read
+    // the field between the two racing writes. Lazy<T> (with the default ExecutionAndPublication mode)
+    // guarantees the factory runs at most once and every caller observes the SAME instance.
+    private static readonly Lazy<AuthListener> LazyInstance = new(() => new AuthListener());
+    public static AuthListener Instance => LazyInstance.Value;
+
+    /// <summary>
+    /// Fase 8: last FCM token this process has sent (or believes was already synced) per paired PC's
+    /// <c>DeviceId</c>, so <see cref="TrySyncFcmTokenOnConnectAsync"/> doesn't redundantly re-send
+    /// <c>token_update</c> on every reconnect within the same app run when nothing changed. Purely an
+    /// in-memory optimization — losing it (process restart) just means one harmless redundant send,
+    /// since <c>AuthWorker.HandleTokenUpdate</c> on the PC side is idempotent.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, string> _lastSyncedFcmToken = new();
 
     public bool IsRunning => _cts != null && !_cts.IsCancellationRequested;
 
@@ -171,6 +192,9 @@ public class AuthListener : IDisposable
                     System.Diagnostics.Debug.WriteLine($"[AuthListener] Connected via Bluetooth to {address}");
                     // Don't send auth_alive proactively — wait for PC to send auth_discover
                     // when the lock screen is active. This prevents premature biometric prompts.
+                    // Token sync (Fase 8) is independent of that — it's not an auth prompt, so it's
+                    // safe (and desirable) to fire immediately on connect regardless of lock state.
+                    _ = TrySyncFcmTokenOnConnectAsync();
                     return true;
                 }
                 else
@@ -209,6 +233,7 @@ public class AuthListener : IDisposable
                 TransportStateChanged?.Invoke(ActiveTransport, true);
                 System.Diagnostics.Debug.WriteLine("[AuthListener] Connected via TCP/USB");
                 // Don't send auth_alive proactively — wait for PC to send auth_discover
+                _ = TrySyncFcmTokenOnConnectAsync();
                 return true;
             }
             else
@@ -376,6 +401,8 @@ public class AuthListener : IDisposable
                 HandleAuthRequest(message[Protocol.AuthRequestPrefix.Length..], fromAddress);
             else if (message.StartsWith(Protocol.PairFinishPrefix))
                 HandlePairFinish(message[Protocol.PairFinishPrefix.Length..]);
+            else if (message.StartsWith(Protocol.TokenUpdateAckPrefix))
+                HandleTokenUpdateAck(message[Protocol.TokenUpdateAckPrefix.Length..]);
         }
         catch (Exception ex)
         {
@@ -533,6 +560,101 @@ public class AuthListener : IDisposable
         await SendReplyAsync(response, request.FromAddress);
         ClearPendingAuthRequest();
         System.Diagnostics.Debug.WriteLine($"[AuthListener] Auth response sent via {ActiveTransport}");
+    }
+
+    /// <summary>
+    /// Send a <c>wingb://token_update</c> message over the currently active direct transport (Fase 8 —
+    /// docs/plan_push_auth_v2.md, "🔄 Rotación de FCM Token"). No-ops (throws) if no direct transport is
+    /// connected — callers should check <see cref="IsTransportConnected"/> first and fall back to the
+    /// relay endpoint otherwise (see <c>FcmService.SyncTokenToPairedPcsAsync</c>).
+    /// Wire format: <c>deviceIdBytes ‖ EncryptGcmToBlob(UTF8(token), deviceKey, aad: deviceIdBytes)</c> —
+    /// symmetric with <c>AuthWorker.HandleTokenUpdate</c> on the PC side.
+    /// </summary>
+    public async Task SendTokenUpdateAsync(Guid deviceId, byte[] deviceKey, string token)
+    {
+        var deviceIdBytes = deviceId.ToByteArray();
+        var blob = CryptoUtils.EncryptGcmToBlob(Encoding.UTF8.GetBytes(token), deviceKey, aad: deviceIdBytes);
+
+        var payload = new byte[deviceIdBytes.Length + blob.Length];
+        Array.Copy(deviceIdBytes, 0, payload, 0, deviceIdBytes.Length);
+        Array.Copy(blob, 0, payload, deviceIdBytes.Length, blob.Length);
+
+        var message = Protocol.TokenUpdatePrefix + Convert.ToBase64String(payload);
+        await SendReplyAsync(message, null);
+    }
+
+#if ANDROID
+    /// <summary>
+    /// Fase 8 (docs/plan_push_auth_v2.md, "🔄 Rotación de FCM Token"): whenever a direct transport
+    /// (just) connects, proactively push this device's current FCM token to every paired PC whose
+    /// last-known-synced token (see <see cref="_lastSyncedFcmToken"/>) doesn't match — instead of only
+    /// reacting to <c>FcmService.OnNewToken</c> (which only fires on an actual token rotation, and only
+    /// while the app process that requested the token is alive to receive the callback). This closes
+    /// the gap where the token rotated while no direct transport was reachable (so the relay path was
+    /// used, or nothing at all if no relay URL was known yet either) — the very next direct-transport
+    /// connection now re-asserts the current token unconditionally.
+    /// </summary>
+    private async Task TrySyncFcmTokenOnConnectAsync()
+    {
+        try
+        {
+            var token = Platforms.Android.FcmService.GetTokenFromDb();
+            if (string.IsNullOrEmpty(token)) return;
+
+            using var db = new MobileDatabase();
+            db.Initialize();
+            var pcs = db.PairedPcs.Where(p => p.IsPaired).ToList();
+
+            foreach (var pc in pcs)
+            {
+                if (!Guid.TryParse(pc.DeviceId, out var deviceIdGuid)) continue;
+                if (_lastSyncedFcmToken.TryGetValue(pc.DeviceId, out var lastSynced) && lastSynced == token)
+                    continue;
+
+                try
+                {
+                    await SendTokenUpdateAsync(deviceIdGuid, pc.DeviceKey, token);
+                    // Optimistic: recorded on send, not on ack, so we don't hammer token_update every
+                    // reconnect while waiting for an ack that might legitimately never arrive (e.g. an
+                    // older PC build that doesn't send token_update_ack yet). HandleTokenUpdateAck below
+                    // just confirms/logs; it doesn't gate this cache.
+                    _lastSyncedFcmToken[pc.DeviceId] = token;
+                    System.Diagnostics.Debug.WriteLine($"[AuthListener] Auto-synced FCM token to {pc.PcName} on connect");
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[AuthListener] Auto token_update failed for {pc.PcName}: {ex.Message}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[AuthListener] TrySyncFcmTokenOnConnectAsync error: {ex.Message}");
+        }
+    }
+#endif
+
+    /// <summary>
+    /// Handle the PC's <c>wingb://token_update_ack</c> reply (Fase 8) — confirms the PC actually
+    /// persisted the token this device sent via <see cref="SendTokenUpdateAsync"/>/
+    /// <see cref="TrySyncFcmTokenOnConnectAsync"/>. Purely informational today (logs only); the
+    /// optimistic <see cref="_lastSyncedFcmToken"/> cache is already updated at send time, not here —
+    /// see that field's XML doc for why.
+    /// </summary>
+    private void HandleTokenUpdateAck(string payload)
+    {
+        try
+        {
+            var deviceIdBytes = Convert.FromBase64String(payload);
+            if (deviceIdBytes.Length != Protocol.GuidLength) return;
+
+            var deviceId = new Guid(deviceIdBytes);
+            System.Diagnostics.Debug.WriteLine($"[AuthListener] PC acknowledged FCM token update for device {deviceId}");
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[AuthListener] token_update_ack parse error: {ex.Message}");
+        }
     }
 
     public async Task SendPairRequestAsync(Guid deviceId, byte[] pairEncryptKey,

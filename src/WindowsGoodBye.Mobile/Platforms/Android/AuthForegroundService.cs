@@ -24,6 +24,13 @@ public class AuthForegroundService : Service
     public const string AuthPromptChannelId = "wingb_auth_prompt_channel";
     public const int AuthPromptNotificationId = 5136;
 
+    // --- Intent extras used to pass notification requests in (fixes the Fase 5 timing bug — see
+    // HandlePendingNotificationIntent below) ---
+    private const string ExtraNotifyKind = "wingb.notify_kind";
+    private const string NotifyKindAuthWake = "auth_wake";
+    private const string NotifyKindPushChallenge = "auth_challenge";
+    private const string ExtraPcName = "wingb.pc_name";
+
     private WifiManager.MulticastLock? _multicastLock;
     private PowerManager.WakeLock? _wakeLock;
 
@@ -60,7 +67,42 @@ public class AuthForegroundService : Service
         // Start the cross-platform listener (with auto-reconnect enabled)
         AuthListener.Instance.Start();
 
+        // Show any notification requested by the caller (FcmService) — see
+        // HandlePendingNotificationIntent's XML doc for why this replaces the old
+        // "StartService(); Instance?.ShowXxx();" two-step pattern.
+        HandlePendingNotificationIntent(intent);
+
         return StartCommandResult.Sticky;
+    }
+
+    /// <summary>
+    /// Fase 5 timing-bug fix (docs/plan_push_auth_v2.md): callers used to do
+    /// <c>AuthForegroundService.StartService(ctx); AuthForegroundService.Instance?.ShowAuthPromptNotification(pcName);</c>
+    /// immediately after each other. <c>StartService</c>/<c>StartForegroundService</c> only *schedules*
+    /// <see cref="OnStartCommand"/> to run — it does not run synchronously — so the second line could
+    /// (and sometimes did) execute before <c>Instance</c> was set, silently dropping the notification.
+    /// Fix: never read <c>Instance</c> from outside. Callers pass what to show as Intent extras via
+    /// <see cref="StartForAuthWake"/>/<see cref="StartForPushChallenge"/>, and this method — which only
+    /// ever runs from within this service's own <see cref="OnStartCommand"/>, after <c>Instance = this</c>
+    /// above — is the sole place that decides whether/what to show.
+    /// </summary>
+    private void HandlePendingNotificationIntent(Intent? intent)
+    {
+        if (intent == null) return;
+
+        switch (intent.GetStringExtra(ExtraNotifyKind))
+        {
+            case NotifyKindAuthWake:
+                var pcName = intent.GetStringExtra(ExtraPcName) ?? "PC";
+                ShowAuthPromptNotification(pcName);
+                break;
+
+            case NotifyKindPushChallenge:
+                var info = PushAuthChallengeInfo.FromIntent(intent);
+                if (info != null)
+                    ShowPushAuthChallengeNotification(info);
+                break;
+        }
     }
 
     public override void OnDestroy()
@@ -162,10 +204,84 @@ public class AuthForegroundService : Service
         nm?.Cancel(AuthPromptNotificationId);
     }
 
-    /// <summary>Start the foreground service from any context.</summary>
+    /// <summary>
+    /// Show a push-auth (Ruta C) challenge notification — heads-up, NOT full-screen. Per
+    /// docs/plan_push_auth_v2.md, "📱 UX en Android Moderno": deliberately does NOT call
+    /// <c>SetFullScreenIntent</c> (unlike the legacy <see cref="ShowAuthPromptNotification"/> above) —
+    /// a high-priority notification on a high-importance channel is already a heads-up notification on
+    /// Android 13-15 without needing <c>USE_FULL_SCREEN_INTENT</c>. The user unlocks the phone and taps
+    /// it, same as Google Prompt. Tapping opens Fase 6's <c>PushAuthActivity</c> (not yet implemented —
+    /// referenced by component name only, so this compiles and works today for everything up to the
+    /// tap; Fase 6 supplies the activity itself).
+    /// </summary>
+    public void ShowPushAuthChallengeNotification(PushAuthChallengeInfo info)
+    {
+        var launchIntent = new Intent();
+        launchIntent.SetClassName(PackageName!, "com.windowsgoodbye.mobile.PushAuthActivity");
+        launchIntent.SetFlags(ActivityFlags.NewTask | ActivityFlags.ClearTop | ActivityFlags.SingleTop);
+        info.WriteToIntent(launchIntent);
+
+        var notificationId = NotificationIdForSession(info.SessionId);
+        var pendingIntent = PendingIntent.GetActivity(
+            this, notificationId, launchIntent,
+            PendingIntentFlags.UpdateCurrent | PendingIntentFlags.Immutable);
+
+        var attemptSuffix = info.AttemptNumber > 1
+            ? $" · intento #{info.AttemptNumber} en los últimos minutos"
+            : "";
+
+        var notification = new NotificationCompat.Builder(this, AuthPromptChannelId)
+            .SetContentTitle("🔐 ¿Eres tú?")
+            .SetContentText($"{info.PcName} quiere desbloquearse — código {info.DisplayCode}{attemptSuffix}")
+            .SetSmallIcon(global::Android.Resource.Drawable.IcLockIdleLock)
+            .SetPriority(NotificationCompat.PriorityHigh)
+            .SetCategory(NotificationCompat.CategoryCall)
+            .SetAutoCancel(true)
+            .SetContentIntent(pendingIntent)
+            .SetVisibility(NotificationCompat.VisibilityPublic)
+            .SetVibrate(new long[] { 0, 250, 250, 250 })
+            .SetTimeoutAfter(60000) // matches the relay session's 60s TTL
+            .Build();
+
+        var nm = (NotificationManager?)GetSystemService(NotificationService);
+        nm?.Notify(notificationId, notification);
+    }
+
+    /// <summary>
+    /// Stable per-session notification ID so simultaneous challenges from different paired PCs (or
+    /// repeated attempts) each get their own notification instead of overwriting one another — see
+    /// docs/plan_push_auth_v2.md, "🖥️ Múltiples PCs Emparejadas". Distinct range from
+    /// <see cref="NotificationId"/>/<see cref="AuthPromptNotificationId"/>.
+    /// </summary>
+    private static int NotificationIdForSession(string sessionId) =>
+        6000 + (int)((uint)sessionId.GetHashCode() % 4000);
+
+    /// <summary>Start the foreground service from any context (no notification request attached).</summary>
     public static void StartService(Context context)
     {
+        LaunchService(context, new Intent(context, typeof(AuthForegroundService)));
+    }
+
+    /// <summary>Start (or update) the foreground service and show the legacy FCM-wake prompt from within its own OnStartCommand.</summary>
+    public static void StartForAuthWake(Context context, string pcName)
+    {
         var intent = new Intent(context, typeof(AuthForegroundService));
+        intent.PutExtra(ExtraNotifyKind, NotifyKindAuthWake);
+        intent.PutExtra(ExtraPcName, pcName);
+        LaunchService(context, intent);
+    }
+
+    /// <summary>Start (or update) the foreground service and show a push-auth challenge notification from within its own OnStartCommand.</summary>
+    public static void StartForPushChallenge(Context context, PushAuthChallengeInfo info)
+    {
+        var intent = new Intent(context, typeof(AuthForegroundService));
+        intent.PutExtra(ExtraNotifyKind, NotifyKindPushChallenge);
+        info.WriteToIntent(intent);
+        LaunchService(context, intent);
+    }
+
+    private static void LaunchService(Context context, Intent intent)
+    {
         if (Build.VERSION.SdkInt >= BuildVersionCodes.O)
             context.StartForegroundService(intent);
         else
