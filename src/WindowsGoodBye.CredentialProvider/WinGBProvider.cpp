@@ -231,6 +231,9 @@ HRESULT WinGBCredential::SetDeselected()
         CloseHandle(_hPipe);
         _hPipe = INVALID_HANDLE_VALUE;
     }
+    // Don't leave a stale "Código: 42" or "Buscando tu teléfono..." on the tile if the user
+    // deselects mid-cycle — the next SetSelected()/Connect() should start clean.
+    ResetTileText();
     return S_OK;
 }
 
@@ -266,9 +269,9 @@ HRESULT WinGBCredential::GetStringValue(DWORD dwFieldID, LPWSTR* ppsz)
     switch (dwFieldID)
     {
     case WINGB_FID_LARGE_TEXT:
-        return SHStrDupW(L"WindowsGoodBye", ppsz);
+        return SHStrDupW(_largeText.c_str(), ppsz);
     case WINGB_FID_SMALL_TEXT:
-        return SHStrDupW(_authenticated ? L"Authenticated! Press Enter..." : L"Tap fingerprint on phone to unlock", ppsz);
+        return SHStrDupW(_smallText.c_str(), ppsz);
     default:
         return E_INVALIDARG;
     }
@@ -290,13 +293,106 @@ HRESULT WinGBCredential::GetSubmitButtonValue(DWORD dwFieldID, DWORD* pdwAdjacen
 }
 
 //----------------------------------------------------------------------
+// Tile text helpers (Fase 9 — status messages)
+//----------------------------------------------------------------------
+
+void WinGBCredential::UpdateTileText(const std::wstring& largeText, const std::wstring& smallText)
+{
+    _largeText = largeText;
+    _smallText = smallText;
+
+    // Push the new text live if LogonUI is already watching this tile (Advise() was called).
+    // Without this, GetStringValue() would eventually return the right value, but nothing tells
+    // LogonUI to re-query it, so the tile would appear frozen until the next unrelated redraw.
+    if (_pCredProvCredentialEvents)
+    {
+        _pCredProvCredentialEvents->SetFieldString(this, WINGB_FID_LARGE_TEXT, _largeText.c_str());
+        _pCredProvCredentialEvents->SetFieldString(this, WINGB_FID_SMALL_TEXT, _smallText.c_str());
+    }
+}
+
+void WinGBCredential::ResetTileText()
+{
+    UpdateTileText(L"WindowsGoodBye", L"Tap fingerprint on phone to unlock");
+}
+
+void WinGBCredential::HandleStatusUpdate(const std::string& statusValue, IQueryContinueWithStatus* pqcws)
+{
+    // Exact values are defined by PipeServer.cs (RunAuthRaceAsync's onStatus callback) — see
+    // docs/plan_push_auth_v2.md, Fase 9, and docs/implementation_progress_push_auth_v2.md for the
+    // full history of how each one was introduced (searching/push_sent/code = Fase 3,
+    // blocked = Fase 3's push-fatigue guard). Unrecognized values are ignored on purpose: the CP
+    // must not break if a future Service build adds a new STATUS value this DLL doesn't know yet.
+    std::wstring largeText = _largeText;
+    std::wstring smallText = _smallText;
+    std::wstring statusMessage; // mirrored to pqcws->SetStatusMessage(), if present
+
+    if (statusValue == "searching")
+    {
+        largeText = L"WindowsGoodBye";
+        smallText = L"Buscando tu teléfono...";
+        statusMessage = L"Buscando dispositivos emparejados...";
+    }
+    else if (statusValue.rfind("push_sent:", 0) == 0)
+    {
+        std::wstring names = Utf8ToWide(statusValue.substr(strlen("push_sent:")));
+        largeText = L"📱 Revisa tu teléfono";
+        smallText = L"Notificación enviada a " + names;
+        statusMessage = smallText;
+    }
+    else if (statusValue.rfind("code:", 0) == 0)
+    {
+        // THE prominent field: the whole point of number matching (anti push-fatigue mitigation)
+        // is that the user can compare this against what PushAuthActivity shows on the phone at a
+        // glance — burying it in small text would defeat the purpose. Shown verbatim, no
+        // reformatting, so the digits match exactly what the phone displays.
+        std::wstring code = Utf8ToWide(statusValue.substr(strlen("code:")));
+        largeText = L"Código: " + code;
+        smallText = L"Confirma este código en tu teléfono";
+        statusMessage = L"Código de verificación: " + code;
+    }
+    else if (statusValue.rfind("blocked:", 0) == 0)
+    {
+        std::string reason = statusValue.substr(strlen("blocked:"));
+        largeText = L"⚠ Demasiados intentos";
+        // Reasons come from FatigueDenyReason (PushFatigueGuard.cs): MinInterval/BackoffActive/
+        // HardCapPerHour today. Shown raw for any value this build doesn't have a friendly string
+        // for yet, rather than silently dropping the reason.
+        std::wstring friendlyReason;
+        if (reason == "MinInterval") friendlyReason = L"espera unos segundos";
+        else if (reason == "BackoffActive") friendlyReason = L"espera un momento";
+        else if (reason == "HardCapPerHour") friendlyReason = L"límite por hora alcanzado";
+        else friendlyReason = Utf8ToWide(reason);
+        smallText = L"Usa tu contraseña (" + friendlyReason + L")";
+        statusMessage = smallText;
+    }
+    else if (statusValue == "timeout")
+    {
+        largeText = L"⏱ Tiempo agotado";
+        smallText = L"No se pudo confirmar. Intenta de nuevo o usa tu contraseña.";
+        statusMessage = smallText;
+    }
+    else
+    {
+        // Unknown STATUS value — ignore (leave tile text unchanged) per the contract above.
+        return;
+    }
+
+    UpdateTileText(largeText, smallText);
+    if (pqcws && !statusMessage.empty())
+        pqcws->SetStatusMessage(statusMessage.c_str());
+}
+
+//----------------------------------------------------------------------
 // Connect - This is where the magic happens!
 // Called when the user selects the WindowsGoodBye tile.
-// We connect to the service pipe and wait for auth.
+// We connect to the service pipe and wait for auth, relaying STATUS:... progress
+// updates to the tile as they arrive (Fase 9).
 //----------------------------------------------------------------------
 HRESULT WinGBCredential::Connect(IQueryContinueWithStatus* pqcws)
 {
     _authenticated = false;
+    ResetTileText();
 
     if (pqcws)
         pqcws->SetStatusMessage(L"Connecting to WindowsGoodBye service...");
@@ -310,6 +406,7 @@ HRESULT WinGBCredential::Connect(IQueryContinueWithStatus* pqcws)
         return E_FAIL;
     }
 
+    UpdateTileText(L"WindowsGoodBye", L"Waiting for phone authentication...");
     if (pqcws)
         pqcws->SetStatusMessage(L"Waiting for phone authentication...\nTap your fingerprint on your Android device.");
 
@@ -321,69 +418,39 @@ HRESULT WinGBCredential::Connect(IQueryContinueWithStatus* pqcws)
         return E_FAIL;
     }
 
-    // Wait for the service to respond with credentials
-    std::string response;
-    if (!ReadFromPipe(_hPipe, response, PIPE_TIMEOUT_MS))
+    // Wait for the service to respond, relaying every "STATUS:..." progress message to the tile
+    // (via HandleStatusUpdate) until a terminal AUTH_READY/TIMEOUT/NO_DEVICES/error arrives.
+    std::wstring domain, username, password;
+    auto onStatus = [this, pqcws](const std::string& statusValue)
     {
-        if (pqcws)
-            pqcws->SetStatusMessage(L"Timeout waiting for phone authentication.");
-        CloseHandle(_hPipe);
-        _hPipe = INVALID_HANDLE_VALUE;
-        return E_FAIL;
-    }
+        HandleStatusUpdate(statusValue, pqcws);
+    };
+
+    PipeAuthResult result = WaitForAuthResult(_hPipe, onStatus, domain, username, password, PIPE_TIMEOUT_MS);
 
     CloseHandle(_hPipe);
     _hPipe = INVALID_HANDLE_VALUE;
 
-    // Parse response: "AUTH_READY\ndomain\\username\npassword"
-    std::string prefix = PIPE_CMD_AUTH_READY;
-    prefix += "\n";
-    if (response.substr(0, prefix.size()) != prefix)
+    if (result != PipeAuthResult::Success)
     {
+        UpdateTileText(L"WindowsGoodBye",
+            result == PipeAuthResult::Timeout ? L"Tiempo agotado. Intenta de nuevo." : L"Error de autenticación.");
         if (pqcws)
-            pqcws->SetStatusMessage(L"Authentication failed or timed out.");
+            pqcws->SetStatusMessage(result == PipeAuthResult::Timeout
+                ? L"Timeout waiting for phone authentication."
+                : L"Authentication failed or timed out.");
         return E_FAIL;
     }
 
-    std::string credentials = response.substr(prefix.size());
-    // Parse: "domain\\username\npassword"
-    size_t newlinePos = credentials.find('\n');
-    if (newlinePos == std::string::npos) return E_FAIL;
-
-    std::string domainUser = credentials.substr(0, newlinePos);
-    std::string password = credentials.substr(newlinePos + 1);
-
-    // Parse domain\\username
-    size_t backslashPos = domainUser.find('\\');
-    std::string domain, username;
-    if (backslashPos != std::string::npos)
-    {
-        domain = domainUser.substr(0, backslashPos);
-        username = domainUser.substr(backslashPos + 1);
-    }
-    else
-    {
-        domain = ".";
-        username = domainUser;
-    }
-
-    // Convert to wide strings
-    _domain = std::wstring(domain.begin(), domain.end());
-    _username = std::wstring(username.begin(), username.end());
-    _password = std::wstring(password.begin(), password.end());
-
-    // Securely clear the narrow string password
-    SecureZeroMemory((void*)password.data(), password.size());
-    SecureZeroMemory((void*)credentials.data(), credentials.size());
-
+    _domain = domain;
+    _username = username;
+    _password = password;
     _authenticated = true;
 
     if (pqcws)
         pqcws->SetStatusMessage(L"Phone authenticated! Unlocking...");
 
-    // Update the status text
-    if (_pCredProvCredentialEvents)
-        _pCredProvCredentialEvents->SetFieldString(this, WINGB_FID_SMALL_TEXT, L"Authenticated! Unlocking...");
+    UpdateTileText(L"WindowsGoodBye", L"Authenticated! Unlocking...");
 
     return S_OK;
 }
@@ -396,6 +463,7 @@ HRESULT WinGBCredential::Disconnect()
         CloseHandle(_hPipe);
         _hPipe = INVALID_HANDLE_VALUE;
     }
+    ResetTileText();
     return S_OK;
 }
 

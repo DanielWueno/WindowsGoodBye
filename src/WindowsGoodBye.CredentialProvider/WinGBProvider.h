@@ -93,6 +93,24 @@ public:
     void SetUsage(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus) { _cpus = cpus; }
 
 private:
+    // Update the tile's large/small text (both the cached strings GetStringValue() returns, and —
+    // if the tile is currently advised — pushed live via SetFieldString so LogonUI redraws without
+    // waiting for another GetStringValue poll). See WinGBProvider.cpp, HandleStatusUpdate/Connect.
+    void UpdateTileText(const std::wstring& largeText, const std::wstring& smallText);
+
+    // Reset the tile to its pre-Connect() default text. Called at the start of Connect() (a fresh
+    // attempt shouldn't show stale text from a previous failed/cancelled attempt) and from
+    // SetDeselected()/Disconnect() so a re-selected tile doesn't show a frozen "Código: NN" from a
+    // cycle that never finished.
+    void ResetTileText();
+
+    // Translate one "STATUS:<value>" payload (see docs/plan_push_auth_v2.md, Fase 9, and
+    // PipeServer.cs for the authoritative list) into large/small tile text and apply it. The
+    // verification code ("code:NN") is written to the LARGE text field — not the small one — so it
+    // is genuinely prominent instead of "lost small text": that prominence is the actual anti
+    // push-fatigue mitigation (number matching only works if the user can compare it at a glance).
+    void HandleStatusUpdate(const std::string& statusValue, IQueryContinueWithStatus* pqcws);
+
     LONG _cRef = 1;
     CREDENTIAL_PROVIDER_USAGE_SCENARIO _cpus = CPUS_INVALID;
     ICredentialProviderCredentialEvents* _pCredProvCredentialEvents = nullptr;
@@ -103,6 +121,11 @@ private:
     std::wstring _password;
     bool _authenticated = false;
     HANDLE _hPipe = INVALID_HANDLE_VALUE;
+
+    // Dynamic tile text — GetStringValue() returns these instead of hardcoded literals so
+    // HandleStatusUpdate()/UpdateTileText() can drive what the user sees during Connect().
+    std::wstring _largeText = L"WindowsGoodBye";
+    std::wstring _smallText = L"Tap fingerprint on phone to unlock";
 };
 
 //----------------------------------------------------------------------
