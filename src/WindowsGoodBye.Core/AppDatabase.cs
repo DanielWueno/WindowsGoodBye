@@ -70,6 +70,13 @@ public class AppDatabase : DbContext
         {
             // Check and add FcmToken column to Devices table
             AddColumnIfMissing(conn, "Devices", "FcmToken", "TEXT");
+
+            // Push Auth v2 (docs/plan_push_auth_v2.md, Fase 1): new DeviceInfo columns.
+            // Bool columns need an explicit DEFAULT so existing rows (which would otherwise get NULL)
+            // still satisfy the non-nullable bool properties when EF Core materializes them.
+            AddColumnIfMissing(conn, "Devices", "FcmTokenValid", "INTEGER NOT NULL DEFAULT 1");
+            AddColumnIfMissing(conn, "Devices", "PushAuthEnabled", "INTEGER NOT NULL DEFAULT 1");
+            AddColumnIfMissing(conn, "Devices", "RelayUrl", "TEXT");
         }
         finally
         {

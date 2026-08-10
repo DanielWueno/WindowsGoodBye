@@ -23,6 +23,13 @@ public static class Protocol
     /// <summary>TCP port for localhost communication via ADB USB forwarding.</summary>
     public const int TcpUsbPort = 26820;
 
+    // --- Relay HTTP Server (embedded in the Service, exposed via Cloudflare Tunnel) ---
+    /// <summary>
+    /// Loopback-only port for the embedded push-auth relay (ASP.NET Kestrel). See
+    /// docs/plan_push_auth_v2.md, section "Relay HTTP Server Embebido — Diseño".
+    /// </summary>
+    public const int RelayPort = 26821;
+
     // --- Transport Types ---
     public enum TransportType { Udp, Bluetooth, TcpUsb }
 
@@ -36,6 +43,46 @@ public static class Protocol
     public const string AuthAlivePrefix = "wingb://auth_alive?";
     public const string AuthRequestPrefix = "wingb://auth_req?";
     public const string AuthResponsePrefix = "wingb://auth_resp?";
+
+    /// <summary>
+    /// Direct-transport (BT/TCP/UDP) message: Android → PC, sent when the FCM registration token
+    /// rotated and a direct transport is available (avoids the relay round-trip).
+    /// Format: "wingb://token_update?device_id={base64 guid}&amp;token={new FCM token}" (payload
+    /// itself is AES-256-GCM encrypted with DeviceKey — see "Rotación de FCM Token" in the plan).
+    /// Named "TokenUpdate" in docs/plan_push_auth_v2.md.
+    /// </summary>
+    public const string TokenUpdatePrefix = "wingb://token_update?";
+
+    /// <summary>
+    /// Direct-transport (BT/TCP/UDP) message: PC → Android, sent immediately after the PC successfully
+    /// processes a <see cref="TokenUpdatePrefix"/> message — Fase 8 (docs/plan_push_auth_v2.md,
+    /// "🔄 Rotación de FCM Token"). Format: "wingb://token_update_ack?{base64 guid device_id}" (not
+    /// encrypted — it carries no secret, just an acknowledgement correlated by device_id). There is no
+    /// equivalent ack for the relay path (<c>POST /api/device/token</c>): the HTTP response itself
+    /// (200 OK) already serves as the acknowledgement there — see <c>HttpRelayClient.UpdateFcmTokenAsync</c>.
+    /// </summary>
+    public const string TokenUpdateAckPrefix = "wingb://token_update_ack?";
+
+    // --- FCM Push Auth (data message "action" field values) ---
+    // These are the values carried in the FCM data payload's "action" key, not wingb:// prefixes,
+    // because FCM is a one-way (PC -> Android) wake-up/data channel — see "Arquitectura Final".
+
+    /// <summary>Legacy FCM wake-up action: tells Android to reconnect over a direct transport.</summary>
+    public const string FcmActionAuthWake = "auth_wake";
+
+    /// <summary>
+    /// FCM data message action: full push-auth challenge (Ruta C). Payload includes
+    /// session_id, encrypted_nonce (AES-256-GCM blob), challenge_ts, pc_name, relay_url and the
+    /// number-matching display_code. See "Flujo Completo de Seguridad" / "Defensa contra Push Fatigue".
+    /// </summary>
+    public const string PushAuthChallenge = "auth_challenge";
+
+    /// <summary>
+    /// Discriminator for a push-auth response/result as carried through relay-related payloads
+    /// (Android's POST /api/auth/respond body, and any status echoed back to the PC).
+    /// Not sent over FCM — Android replies to the relay over HTTPS, never back over FCM.
+    /// </summary>
+    public const string PushAuthResponse = "auth_response";
 
     // --- Pairing QR Payload Layout ---
     // [16 bytes DeviceId (GUID)] [32 bytes DeviceKey] [32 bytes AuthKey] [32 bytes PairEncryptKey]
