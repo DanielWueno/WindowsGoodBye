@@ -28,14 +28,34 @@ public class AdminPipeServer : BackgroundService
         {
             try
             {
+                // SECURITY (docs/plan_push_auth_v2.md, Fase 0 bonus / Fisura F): this pipe accepts
+                // privileged admin commands (e.g. PAIR_START, which installs new crypto key material).
+                // It previously granted Everyone + FullControl — any local process (including a
+                // sandboxed/compromised one, Guest sessions, etc.) could not only talk to it but also
+                // rewrite its ACL or take ownership. We restrict to:
+                //   - BUILTIN\Administrators / NT AUTHORITY\SYSTEM: FullControl, for admin tooling
+                //     and the Service's own SYSTEM identity.
+                //   - INTERACTIVE (any locally logged-on console/RDP user): ReadWrite only.
+                // The INTERACTIVE grant is required because the TrayApp — the only real caller of
+                // this pipe — runs as the plain logged-in user with no elevation (no app.manifest
+                // requestedExecutionLevel="requireAdministrator"), and on a UAC-enabled admin account
+                // that process's token carries Administrators only as "use for deny only", so an
+                // Administrators-only ACL would silently lock the TrayApp out. Scoping to INTERACTIVE
+                // instead of Everyone still removes the actual attack surface this fix targets:
+                // Network, Anonymous, Guest and other non-interactive/service SIDs. The plan's own
+                // wording allows for this ("... o el usuario de sesión interactiva concreto)").
                 var ps = new PipeSecurity();
                 ps.AddAccessRule(new PipeAccessRule(
-                    new SecurityIdentifier(WellKnownSidType.WorldSid, null),
-                    PipeAccessRights.ReadWrite,
+                    new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
+                    PipeAccessRights.FullControl,
                     AccessControlType.Allow));
                 ps.AddAccessRule(new PipeAccessRule(
                     new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
                     PipeAccessRights.FullControl,
+                    AccessControlType.Allow));
+                ps.AddAccessRule(new PipeAccessRule(
+                    new SecurityIdentifier(WellKnownSidType.InteractiveSid, null),
+                    PipeAccessRights.ReadWrite,
                     AccessControlType.Allow));
 
                 using var pipe = NamedPipeServerStreamAcl.Create(

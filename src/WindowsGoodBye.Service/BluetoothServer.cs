@@ -26,6 +26,16 @@ public class BluetoothServer : IDisposable
     /// <summary>Fired when a message is received from a Bluetooth client. Includes a reply callback.</summary>
     public event Action<string, Func<string, Task>>? MessageReceived;
 
+    /// <summary>
+    /// Whether at least one Bluetooth client currently has an open stream. Used by
+    /// <c>AuthWorker.HasActiveDirectTransport</c> (Fase 3 — "hay transporte directo activo" in the
+    /// hybrid-mode decision algorithm, docs/plan_push_auth_v2.md).
+    /// </summary>
+    public bool HasActiveConnections
+    {
+        get { lock (_streamsLock) return _activeStreams.Count > 0; }
+    }
+
     /// <summary>Whether the Bluetooth adapter is available on this machine.</summary>
     public static bool IsAvailable
     {
@@ -72,14 +82,55 @@ public class BluetoothServer : IDisposable
         }
     }
 
+    /// <summary>
+    /// How long to wait for a connection before logging and looping back to re-check cancellation.
+    /// 32feet.NET's <c>AcceptBluetoothClient()</c> is a blocking synchronous call with no built-in
+    /// timeout/cancellation support, so a stuck/faulty Bluetooth stack could otherwise hang this loop
+    /// forever with no visibility. See docs/plan_push_auth_v2.md, Fase 0 bonus.
+    /// </summary>
+    private static readonly TimeSpan AcceptTimeout = TimeSpan.FromSeconds(30);
+
     private async Task AcceptLoop(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested && _listener != null)
         {
+            Task<BluetoothClient> acceptTask;
             try
             {
-                // AcceptBluetoothClient is blocking, run on thread pool
-                var client = await Task.Run(() => _listener.AcceptBluetoothClient(), ct);
+                // AcceptBluetoothClient is blocking with no cancellation support — run it on the
+                // thread pool. We can't actually cancel the underlying call once started (it only
+                // unblocks when a client connects or _listener.Stop() is called), so we keep awaiting
+                // this SAME task across timeout iterations below instead of starting a new Accept
+                // call each time.
+                acceptTask = Task.Run(() => _listener!.AcceptBluetoothClient(), ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to start Bluetooth accept");
+                await Task.Delay(1000, ct);
+                continue;
+            }
+
+            // Wrap the (uncancellable) accept in Task.WhenAny with a timeout so we periodically
+            // re-check the cancellation token and log liveness instead of blocking indefinitely.
+            while (!ct.IsCancellationRequested && !acceptTask.IsCompleted)
+            {
+                var completed = await Task.WhenAny(acceptTask, Task.Delay(AcceptTimeout, ct))
+                    .ConfigureAwait(false);
+
+                if (completed != acceptTask)
+                {
+                    _logger.LogDebug(
+                        "Bluetooth accept: no client after {Timeout}s, still listening",
+                        AcceptTimeout.TotalSeconds);
+                }
+            }
+
+            if (ct.IsCancellationRequested) break;
+
+            try
+            {
+                var client = await acceptTask; // already completed at this point
                 _logger.LogInformation("Bluetooth client connected: {Name}",
                     client.RemoteMachineName ?? "Unknown");
 

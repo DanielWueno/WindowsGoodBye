@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
 
@@ -30,7 +31,7 @@ public class UdpManager : IDisposable
         _multicastClient = new UdpClient();
         _multicastClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
         _multicastClient.Client.Bind(new IPEndPoint(IPAddress.Any, Protocol.MulticastPort));
-        _multicastClient.JoinMulticastGroup(_multicastGroup);
+        JoinMulticastGroupOnAllInterfaces(_multicastClient);
 
         // Unicast listener
         _unicastClient = new UdpClient();
@@ -39,6 +40,72 @@ public class UdpManager : IDisposable
 
         Task.Run(() => ListenLoop(_multicastClient, _cts.Token));
         Task.Run(() => ListenLoop(_unicastClient, _cts.Token));
+    }
+
+    /// <summary>
+    /// Join the multicast group on every active, multicast-capable IPv4 network interface
+    /// individually, instead of a single interface-agnostic join. A generic
+    /// <c>JoinMulticastGroup(group)</c> call lets the OS pick one "default" interface, which may not
+    /// be the one actually connected to the phone's LAN on multi-NIC machines (Ethernet + WiFi + VPN
+    /// adapters, etc.) — and a single failed join used to either throw unhandled (crashing
+    /// StartListening) or, depending on the interface, fail silently. Each interface is now attempted
+    /// independently, with failures logged (not swallowed) and the rest still attempted.
+    /// See docs/plan_push_auth_v2.md, Fase 0 bonus.
+    /// </summary>
+    private static void JoinMulticastGroupOnAllInterfaces(UdpClient client)
+    {
+        var joinedAny = false;
+
+        try
+        {
+            foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (ni.OperationalStatus != OperationalStatus.Up) continue;
+                if (ni.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel) continue;
+                if (!ni.Supports(NetworkInterfaceComponent.IPv4)) continue;
+
+                IPInterfaceProperties props;
+                try { props = ni.GetIPProperties(); }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[UdpManager] Could not read IP properties for interface '{ni.Name}': {ex.Message}");
+                    continue;
+                }
+
+                var ipv4Props = props.GetIPv4Properties();
+                if (ipv4Props == null) continue; // interface has no IPv4 configuration
+
+                try
+                {
+                    client.JoinMulticastGroup(ipv4Props.Index, IPAddress.Parse(Protocol.MulticastGroup));
+                    joinedAny = true;
+                }
+                catch (Exception ex)
+                {
+                    // Expected for some virtual/VPN adapters that don't support multicast — log and
+                    // keep trying the remaining interfaces instead of aborting startup entirely.
+                    Console.Error.WriteLine(
+                        $"[UdpManager] Multicast join failed on interface '{ni.Name}' (index {ipv4Props.Index}): {ex.Message}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[UdpManager] Failed to enumerate network interfaces: {ex.Message}");
+        }
+
+        if (!joinedAny)
+        {
+            // Fallback: let the OS pick the default interface, same behavior as before this change.
+            try
+            {
+                client.JoinMulticastGroup(IPAddress.Parse(Protocol.MulticastGroup));
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[UdpManager] Fallback multicast join (default interface) failed: {ex.Message}");
+            }
+        }
     }
 
     private async Task ListenLoop(UdpClient client, CancellationToken ct)
