@@ -134,7 +134,7 @@ public class FcmService : FirebaseMessagingService
                     }
                     else if (!string.IsNullOrEmpty(pc.RelayUrl))
                     {
-                        var relayKey = RelayKeyDerivation.DeriveRelayKey(pc.DeviceKey);
+                        var relayKey = pc.RelayKey; // Fase 10: PairedPc.RelayKey (computed, not persisted)
                         await HttpRelayClient.UpdateFcmTokenAsync(pc.RelayUrl!, pc.DeviceId, token, relayKey);
                     }
                     // else: no known way to reach this PC right now.

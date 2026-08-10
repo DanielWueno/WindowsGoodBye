@@ -207,7 +207,7 @@ public class PushAuthActivity : AppCompatActivity
             return;
         }
 
-        var relayKey = RelayKeyDerivation.DeriveRelayKey(deviceKey);
+        var relayKey = pc.RelayKey; // Fase 10: PairedPc.RelayKey (computed, not persisted)
 
         try
         {
@@ -248,7 +248,7 @@ public class PushAuthActivity : AppCompatActivity
         {
             try
             {
-                var relayKey = RelayKeyDerivation.DeriveRelayKey(pc.DeviceKey);
+                var relayKey = pc.RelayKey; // Fase 10: PairedPc.RelayKey (computed, not persisted)
                 await HttpRelayClient.RejectAsync(relayUrl!, _challenge.SessionId, _challenge.DeviceId, reason, relayKey);
             }
             catch (Exception ex)

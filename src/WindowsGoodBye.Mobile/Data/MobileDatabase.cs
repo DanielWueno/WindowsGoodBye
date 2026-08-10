@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using WindowsGoodBye.Core;
 #if ANDROID
 using WindowsGoodBye.Mobile.Platforms.Android;
 #endif
@@ -77,6 +78,11 @@ public class MobileDatabase : DbContext
             // (see FcmService.cs) ahead of Fase 10 formally syncing it during pairing. Nullable — a
             // freshly paired device won't have one until either a challenge arrives or Fase 10 lands.
             AddColumnIfMissing(conn, "PairedPcs", "RelayUrl", "TEXT");
+
+            // Fase 10 (push auth v2): seeded from the QR at pairing time (PairingSession.GenerateQrData)
+            // to mirror the PC-side default (DeviceInfo.PushAuthEnabled, also DEFAULT 1) — see
+            // Models.cs/AppDatabase.cs for the PC-side equivalent of this same column.
+            AddColumnIfMissing(conn, "PairedPcs", "PushAuthEnabled", "INTEGER NOT NULL DEFAULT 1");
         }
         finally
         {
@@ -148,6 +154,16 @@ public class PairedPc
     /// </summary>
     public string? RelayUrl { get; set; }
 
+    /// <summary>
+    /// User/device preference for whether Push Auth (Ruta C) may be attempted for this PC,
+    /// independent of whether the FCM token is technically valid — mirrors
+    /// <see cref="WindowsGoodBye.Core.DeviceInfo.PushAuthEnabled"/> on the PC side. Seeded from the
+    /// QR's <c>pushAuthEnabledDefault</c> segment at pairing time (see
+    /// <c>PairingSession.GenerateQrData</c>/<c>QrScanPage.ProcessQrCode</c>); the user can flip it
+    /// later from the Android app or the TrayApp (Fase 12).
+    /// </summary>
+    public bool PushAuthEnabled { get; set; } = true;
+
     /// <summary>When the device was paired (UTC).</summary>
     public DateTime PairedAt { get; set; } = DateTime.UtcNow;
 
@@ -196,6 +212,19 @@ public class PairedPc
     public byte[] AuthKey => Convert.FromBase64String(AuthKeyBase64);
     public byte[]? PairEncryptKey => string.IsNullOrEmpty(PairEncryptKeyBase64)
         ? null : Convert.FromBase64String(PairEncryptKeyBase64);
+
+    /// <summary>
+    /// HKDF-derived relay authentication key (<c>RelayKeyDerivation.DeriveRelayKey(DeviceKey)</c>),
+    /// computed on demand — deliberately NOT a persisted/encrypted column. It is fully determined by
+    /// <see cref="DeviceKey"/> (itself already envelope-encrypted at rest), so storing a second copy
+    /// would duplicate secret material without adding any protection, and would need its own
+    /// wrap/unwrap plumbing to keep it as safe as DeviceKey. This mirrors the precedent already set in
+    /// Fase 5 (see docs/implementation_progress_push_auth_v2.md) where the same key is derived on the
+    /// fly rather than cached. Exposed here purely to remove the
+    /// <c>RelayKeyDerivation.DeriveRelayKey(pc.DeviceKey)</c> duplication at call sites
+    /// (FcmService/PushAuthActivity) — functionally identical, not a new capability.
+    /// </summary>
+    public byte[] RelayKey => RelayKeyDerivation.DeriveRelayKey(DeviceKey);
 }
 
 /// <summary>
