@@ -8,6 +8,9 @@
     <SelfContained>false</SelfContained>
   </PropertyGroup>
   <ItemGroup>
+    <!-- Kestrel/Minimal API/RateLimiting for the embedded push-auth RelayServer (Fase 2). Worker SDK
+         projects don't get the ASP.NET Core shared framework by default, hence the explicit reference. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.*" />
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="9.0.*" />
     <PackageReference Include="InTheHand.Net.Bluetooth" Version="4.*" />
