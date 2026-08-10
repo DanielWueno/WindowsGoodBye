@@ -97,16 +97,21 @@ public partial class QrScanPage : ContentPage
             var alreadyPaired = db.PairedPcs.FirstOrDefault(p => p.DeviceId == deviceId.ToString());
             if (alreadyPaired != null) db.PairedPcs.Remove(alreadyPaired);
 
-            db.PairedPcs.Add(new PairedPc
+            var pairedPc = new PairedPc
             {
                 DeviceId = deviceId.ToString(),
-                DeviceKeyBase64 = Convert.ToBase64String(deviceKey),
                 AuthKeyBase64 = Convert.ToBase64String(authKey),
                 PairEncryptKeyBase64 = Convert.ToBase64String(pairEncryptKey),
                 PcName = "Pairing...",
                 IsPaired = false,
                 PairedAt = DateTime.UtcNow
-            });
+            };
+            // DeviceKey is envelope-encrypted with a non-exportable Android Keystore key before it
+            // ever touches SQLite — see SecureKeyStorage / docs/plan_push_auth_v2.md "Almacenamiento
+            // Seguro de DeviceKey en Android". Only the ciphertext + IV are persisted.
+            pairedPc.SetDeviceKey(deviceKey);
+
+            db.PairedPcs.Add(pairedPc);
             db.SaveChanges();
 
             // --- Ensure the AuthListener / foreground service is running ---
