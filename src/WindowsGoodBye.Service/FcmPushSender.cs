@@ -59,7 +59,12 @@ public class FcmPushSender
     }
 
     /// <summary>Whether FCM v1 is configured (project id + a loadable service account) and available.</summary>
-    public bool IsAvailable => _initialized && _serviceAccount != null && !string.IsNullOrEmpty(_projectId);
+    /// <remarks>
+    /// Fase 13 (Testing): marked <c>virtual</c> (behavior unchanged) so a test-only subclass can fake
+    /// "FCM is available" without a real service account/OAuth2 setup — see
+    /// tests/WindowsGoodBye.Service.Tests/AuthWorkerRaceIntegrationTests.cs.
+    /// </remarks>
+    public virtual bool IsAvailable => _initialized && _serviceAccount != null && !string.IsNullOrEmpty(_projectId);
 
     private void LoadConfig(IConfiguration configuration)
     {
@@ -190,7 +195,13 @@ public class FcmPushSender
     /// surface it) using the HTTP v1 API. Shared by <see cref="SendAuthWakeAsync"/> and
     /// <see cref="SendAuthChallengeAsync"/>.
     /// </summary>
-    public async Task<FcmSendResult> SendDataMessageAsync(string fcmToken, IDictionary<string, string> data)
+    /// <remarks>
+    /// Fase 13 (Testing): marked <c>virtual</c> (behavior unchanged) so a test-only subclass can fake
+    /// FCM send outcomes (success/token-invalid/failed) without ever calling the real
+    /// oauth2.googleapis.com/fcm.googleapis.com endpoints — see
+    /// tests/WindowsGoodBye.Service.Tests/AuthWorkerRaceIntegrationTests.cs.
+    /// </remarks>
+    public virtual async Task<FcmSendResult> SendDataMessageAsync(string fcmToken, IDictionary<string, string> data)
     {
         if (!IsAvailable)
         {
