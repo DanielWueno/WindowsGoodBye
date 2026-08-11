@@ -36,6 +36,8 @@ Desktop.ini
 *.db
 *.db-shm
 *.db-wal
+google-services.json
+*firebase-adminsdk*.json
 
 # Release output
 release/

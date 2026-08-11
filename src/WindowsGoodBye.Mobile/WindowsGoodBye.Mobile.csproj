@@ -53,4 +53,11 @@
 		<ProjectReference Include="..\WindowsGoodBye.Core\WindowsGoodBye.Core.csproj" />
 	</ItemGroup>
 
+	<!-- Per-developer Firebase project config (Fase 0's FCM push-auth setup). Not committed —
+	     each developer/deployment generates their own at console.firebase.google.com for Android
+	     app com.windowsgoodbye.mobile and drops it here; see .gitignore. -->
+	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android' AND Exists('google-services.json')">
+		<GoogleServicesJson Include="google-services.json" />
+	</ItemGroup>
+
 </Project>
