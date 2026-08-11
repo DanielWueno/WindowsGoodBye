@@ -18,12 +18,18 @@ namespace WindowsGoodBye.Service;
 ///
 /// Supports two modes, per the plan's "Opciones de túnel" note:
 /// <list type="bullet">
-/// <item><description>Quick Tunnel (no Cloudflare account): <c>cloudflared tunnel --url http://localhost:{port} --no-autoupdate</c>.
+/// <item><description>Quick Tunnel (no Cloudflare account): <c>cloudflared tunnel --url http://localhost:{port} --no-autoupdate --protocol http2</c>.
 /// URL is randomly assigned and changes every restart — the whole reason <see cref="TunnelUrlChanged"/> exists.</description></item>
-/// <item><description>Named Tunnel (recommended, stable URL): <c>cloudflared tunnel run --token {token}</c>,
+/// <item><description>Named Tunnel (recommended, stable URL): <c>cloudflared tunnel run --protocol http2 --token {token}</c>,
 /// when a tunnel token is supplied. Fase 11 (installer) is responsible for provisioning that token and its
 /// <c>credentials.json</c>, ACL'd the same as the admin pipe (see docs/plan_push_auth_v2.md, Fase 11).</description></item>
 /// </list>
+///
+/// <c>--protocol http2</c> is forced on both modes deliberately: cloudflared defaults to QUIC (UDP/7844),
+/// which is silently blocked on some networks (verified in this exact environment — cloudflared's own
+/// connectivity precheck detects the QUIC failure and recommends http2, but does not switch automatically;
+/// it just keeps retrying QUIC forever). HTTP/2 runs over plain outbound TCP/443, which is virtually always
+/// allowed. The tradeoff (slightly higher latency than QUIC) is irrelevant for push-auth's use case.
 /// </summary>
 public sealed class TunnelManager : IAsyncDisposable
 {
@@ -84,8 +90,8 @@ public sealed class TunnelManager : IAsyncDisposable
         }
 
         var arguments = string.IsNullOrEmpty(_namedTunnelToken)
-            ? $"tunnel --url http://localhost:{_localPort} --no-autoupdate"
-            : $"tunnel run --token {_namedTunnelToken}";
+            ? $"tunnel --url http://localhost:{_localPort} --no-autoupdate --protocol http2"
+            : $"tunnel run --protocol http2 --token {_namedTunnelToken}";
 
         var startInfo = new ProcessStartInfo(_cloudflaredPath, arguments)
         {
