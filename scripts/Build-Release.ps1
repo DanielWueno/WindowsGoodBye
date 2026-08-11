@@ -143,7 +143,10 @@ if (-not $SkipCredentialProvider) {
 call "$vcvarsall" x64
 cl.exe /EHsc /LD /DUNICODE /D_UNICODE /std:c++17 /O2 "$srcFile" /Fe"$outDll" /link /DEF:"$defFile" ole32.lib advapi32.lib user32.lib
 "@
-        $buildCmd | cmd.exe /S 2>&1
+        $buildBat = Join-Path $env:TEMP "wingb_build_cred.bat"
+        [System.IO.File]::WriteAllText($buildBat, $buildCmd, [System.Text.Encoding]::ASCII)
+        cmd.exe /c "`"$buildBat`""
+        Remove-Item $buildBat -Force -ErrorAction SilentlyContinue
         if ($LASTEXITCODE -eq 0) {
             # Clean temp obj files
             Get-ChildItem $serviceOut -Filter "*.obj" | Remove-Item -Force -ErrorAction SilentlyContinue
