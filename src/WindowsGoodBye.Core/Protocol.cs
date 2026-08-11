@@ -129,6 +129,24 @@ public static class Protocol
     /// </summary>
     public const string AdminCmd_SetPushAuth = "SET_PUSH_AUTH";
 
+    /// <summary>
+    /// Delete a paired device. Format: <c>"DELETE_DEVICE\n{deviceId guid}"</c>. The Service (not the
+    /// TrayApp) performs the actual <c>AppDatabase</c> removal — see <c>AuthWorker.DeleteDevice</c> —
+    /// for the same reason <see cref="AdminCmd_SetPushAuth"/> does: it must land on the SAME tracked
+    /// <c>AppDatabase</c> instance <c>AuthWorker.RunAuthRaceAsync</c> reads from, avoiding an EF Core
+    /// identity-map staleness gap that a direct TrayApp-side DB write (a different DbContext/connection)
+    /// would leave until the Service restarts. Response: <see cref="AdminResp_Ok"/> or <see cref="AdminResp_Error"/>.
+    /// </summary>
+    public const string AdminCmd_DeleteDevice = "DELETE_DEVICE";
+
+    /// <summary>
+    /// Update a paired device's <c>DeviceInfo.Enabled</c> flag. Format:
+    /// <c>"SET_DEVICE_ENABLED\n{deviceId guid}\n{"1"|"0"}"</c>. Same rationale as
+    /// <see cref="AdminCmd_DeleteDevice"/> / <see cref="AdminCmd_SetPushAuth"/> — see
+    /// <c>AuthWorker.SetDeviceEnabled</c>. Response: <see cref="AdminResp_Ok"/> or <see cref="AdminResp_Error"/>.
+    /// </summary>
+    public const string AdminCmd_SetDeviceEnabled = "SET_DEVICE_ENABLED";
+
     // Admin pipe responses (Service → TrayApp):
     public const string AdminResp_Ok = "OK";                      // Pairing session created / command applied
     public const string AdminResp_PairDone = "PAIR_DONE";         // Pairing complete — followed by \n + name \n + model

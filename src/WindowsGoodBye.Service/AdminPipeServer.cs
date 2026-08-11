@@ -114,6 +114,14 @@ public class AdminPipeServer : BackgroundService
             {
                 await HandleSetPushAuth(pipe, command, ct);
             }
+            else if (command.StartsWith(Protocol.AdminCmd_DeleteDevice))
+            {
+                await HandleDeleteDevice(pipe, command, ct);
+            }
+            else if (command.StartsWith(Protocol.AdminCmd_SetDeviceEnabled))
+            {
+                await HandleSetDeviceEnabled(pipe, command, ct);
+            }
             else
             {
                 _logger.LogWarning("Unknown admin command: {Cmd}", command);
@@ -229,6 +237,87 @@ public class AdminPipeServer : BackgroundService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error handling SET_PUSH_AUTH");
+            try { await WritePipeAsync(pipe, Protocol.AdminResp_Error + "\n" + ex.Message, ct); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// Handles <see cref="Protocol.AdminCmd_DeleteDevice"/> ("DELETE_DEVICE\n{deviceId}"). Same
+    /// AuthWorker-first / fresh-AppDatabase-fallback pattern as <see cref="HandleSetPushAuth"/> —
+    /// see <c>AuthWorker.DeleteDevice</c> for why the Service must be the one performing the write.
+    /// </summary>
+    private async Task HandleDeleteDevice(NamedPipeServerStream pipe, string command, CancellationToken ct)
+    {
+        try
+        {
+            var parts = command.Split('\n');
+            if (parts.Length != 2 || !Guid.TryParse(parts[1].Trim(), out var deviceId))
+            {
+                await WritePipeAsync(pipe, Protocol.AdminResp_Error + "\nMalformed DELETE_DEVICE command", ct);
+                return;
+            }
+
+            var applied = AuthWorker.Instance?.DeleteDevice(deviceId) ?? false;
+            if (!applied)
+            {
+                using var freshDb = new AppDatabase();
+                var device = freshDb.Devices.Find(deviceId);
+                if (device == null)
+                {
+                    await WritePipeAsync(pipe, Protocol.AdminResp_Error + "\nUnknown device_id", ct);
+                    return;
+                }
+                freshDb.Devices.Remove(device);
+                freshDb.SaveChanges();
+            }
+
+            await WritePipeAsync(pipe, Protocol.AdminResp_Ok, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error handling DELETE_DEVICE");
+            try { await WritePipeAsync(pipe, Protocol.AdminResp_Error + "\n" + ex.Message, ct); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// Handles <see cref="Protocol.AdminCmd_SetDeviceEnabled"/> ("SET_DEVICE_ENABLED\n{deviceId}\n{0|1}").
+    /// Same AuthWorker-first / fresh-AppDatabase-fallback pattern as <see cref="HandleSetPushAuth"/> —
+    /// see <c>AuthWorker.SetDeviceEnabled</c> for why the Service must be the one performing the write.
+    /// </summary>
+    private async Task HandleSetDeviceEnabled(NamedPipeServerStream pipe, string command, CancellationToken ct)
+    {
+        try
+        {
+            var parts = command.Split('\n');
+            if (parts.Length != 3 || !Guid.TryParse(parts[1].Trim(), out var deviceId) ||
+                (parts[2].Trim() != "0" && parts[2].Trim() != "1"))
+            {
+                await WritePipeAsync(pipe, Protocol.AdminResp_Error + "\nMalformed SET_DEVICE_ENABLED command", ct);
+                return;
+            }
+
+            var enabled = parts[2].Trim() == "1";
+
+            var applied = AuthWorker.Instance?.SetDeviceEnabled(deviceId, enabled) ?? false;
+            if (!applied)
+            {
+                using var freshDb = new AppDatabase();
+                var device = freshDb.Devices.Find(deviceId);
+                if (device == null)
+                {
+                    await WritePipeAsync(pipe, Protocol.AdminResp_Error + "\nUnknown device_id", ct);
+                    return;
+                }
+                device.Enabled = enabled;
+                freshDb.SaveChanges();
+            }
+
+            await WritePipeAsync(pipe, Protocol.AdminResp_Ok, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error handling SET_DEVICE_ENABLED");
             try { await WritePipeAsync(pipe, Protocol.AdminResp_Error + "\n" + ex.Message, ct); } catch { }
         }
     }

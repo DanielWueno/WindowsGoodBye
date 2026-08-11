@@ -674,6 +674,53 @@ public class AuthWorker : BackgroundService
         return true;
     }
 
+    /// <summary>
+    /// Same rationale as <see cref="SetDevicePushAuthEnabled"/>: called by <see cref="AdminPipeServer"/>
+    /// on <see cref="Protocol.AdminCmd_SetDeviceEnabled"/> so the TrayApp's "Manage Devices" Enable/Disable
+    /// toggle writes through THIS instance's own long-lived <see cref="_db"/> instead of the TrayApp's own
+    /// <see cref="AppDatabase"/> — otherwise <see cref="RunAuthRaceAsync"/>'s <c>d.Enabled</c> filter would
+    /// keep using the stale tracked value until the Service restarts.
+    /// </summary>
+    /// <returns>False if the Service hasn't finished starting up yet (<c>_db</c> not initialized) or the
+    /// device_id doesn't exist — the caller (<see cref="AdminPipeServer"/>) falls back to a fresh
+    /// <see cref="AppDatabase"/> write in the former case.</returns>
+    internal bool SetDeviceEnabled(Guid deviceId, bool enabled)
+    {
+        if (_db == null) return false;
+
+        var device = _db.Devices.Find(deviceId);
+        if (device == null) return false;
+
+        device.Enabled = enabled;
+        _db.SaveChanges();
+        _logger.LogInformation("Device {Name} {State} via TrayApp", device.FriendlyName, enabled ? "enabled" : "disabled");
+        return true;
+    }
+
+    /// <summary>
+    /// Same rationale as <see cref="SetDevicePushAuthEnabled"/>: called by <see cref="AdminPipeServer"/>
+    /// on <see cref="Protocol.AdminCmd_DeleteDevice"/> so the TrayApp's "Manage Devices" delete action
+    /// removes the row from THIS instance's own long-lived <see cref="_db"/> — otherwise
+    /// <see cref="RunAuthRaceAsync"/>'s already-tracked <see cref="DeviceInfo"/> would keep being
+    /// returned by <c>_db.Devices.Where(...)</c> (and could still be used to authenticate) until the
+    /// Service restarts, even though the row was already gone from the database.
+    /// </summary>
+    /// <returns>False if the Service hasn't finished starting up yet (<c>_db</c> not initialized) or the
+    /// device_id doesn't exist — the caller (<see cref="AdminPipeServer"/>) falls back to a fresh
+    /// <see cref="AppDatabase"/> write in the former case.</returns>
+    internal bool DeleteDevice(Guid deviceId)
+    {
+        if (_db == null) return false;
+
+        var device = _db.Devices.Find(deviceId);
+        if (device == null) return false;
+
+        _db.Devices.Remove(device);
+        _db.SaveChanges();
+        _logger.LogInformation("Device {Name} deleted via TrayApp", device.FriendlyName);
+        return true;
+    }
+
     /// <summary>True if at least one BT or TCP/USB client currently has an open connection.</summary>
     internal bool HasActiveDirectTransport =>
         (_bt?.HasActiveConnections ?? false) || (_tcp?.HasActiveConnections ?? false);
