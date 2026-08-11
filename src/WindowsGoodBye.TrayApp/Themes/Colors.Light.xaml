@@ -1,0 +1,54 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- Brand colors — from innovapp-liquid-glass mockup, shared between Light/Dark -->
+    <Color x:Key="CoreColor">#FF1920F7</Color>
+    <Color x:Key="CyanColor">#FF0381FF</Color>
+    <Color x:Key="PurpleColor">#FF8B5CF6</Color>
+    <Color x:Key="GreenColor">#FF34D399</Color>
+    <Color x:Key="YellowColor">#FFFACC15</Color>
+    <Color x:Key="OrangeColor">#FFF97316</Color>
+
+    <!-- Surface tokens — light theme -->
+    <Color x:Key="BgAColor">#FFEEF1FB</Color>
+    <Color x:Key="BgBColor">#FFE4E9FA</Color>
+    <Color x:Key="BgCColor">#FFF7F4FB</Color>
+    <Color x:Key="InkColor">#FF0E1526</Color>
+    <Color x:Key="InkSoftColor">#FF525D78</Color>
+    <Color x:Key="InkFaintColor">#FF8A94AC</Color>
+    <Color x:Key="GlassColor">#85FFFFFF</Color>
+    <Color x:Key="GlassStrongColor">#BDFFFFFF</Color>
+    <Color x:Key="GlassHiColor">#EBFFFFFF</Color>
+    <Color x:Key="GlassBorderColor">#D9FFFFFF</Color>
+    <Color x:Key="GlassBorderSoftColor">#14141E3C</Color>
+    <Color x:Key="DividerColor">#17141E3C</Color>
+    <Color x:Key="SheenColor">#A6FFFFFF</Color>
+
+    <SolidColorBrush x:Key="CoreBrush" Color="{StaticResource CoreColor}" />
+    <SolidColorBrush x:Key="CyanBrush" Color="{StaticResource CyanColor}" />
+    <SolidColorBrush x:Key="PurpleBrush" Color="{StaticResource PurpleColor}" />
+    <SolidColorBrush x:Key="GreenBrush" Color="{StaticResource GreenColor}" />
+    <SolidColorBrush x:Key="YellowBrush" Color="{StaticResource YellowColor}" />
+    <SolidColorBrush x:Key="OrangeBrush" Color="{StaticResource OrangeColor}" />
+
+    <SolidColorBrush x:Key="BgABrush" Color="{StaticResource BgAColor}" />
+    <SolidColorBrush x:Key="BgBBrush" Color="{StaticResource BgBColor}" />
+    <SolidColorBrush x:Key="BgCBrush" Color="{StaticResource BgCColor}" />
+    <SolidColorBrush x:Key="InkBrush" Color="{StaticResource InkColor}" />
+    <SolidColorBrush x:Key="InkSoftBrush" Color="{StaticResource InkSoftColor}" />
+    <SolidColorBrush x:Key="InkFaintBrush" Color="{StaticResource InkFaintColor}" />
+    <SolidColorBrush x:Key="GlassBrush" Color="{StaticResource GlassColor}" />
+    <SolidColorBrush x:Key="GlassStrongBrush" Color="{StaticResource GlassStrongColor}" />
+    <SolidColorBrush x:Key="GlassHiBrush" Color="{StaticResource GlassHiColor}" />
+    <SolidColorBrush x:Key="GlassBorderBrush" Color="{StaticResource GlassBorderColor}" />
+    <SolidColorBrush x:Key="GlassBorderSoftBrush" Color="{StaticResource GlassBorderSoftColor}" />
+    <SolidColorBrush x:Key="DividerBrush" Color="{StaticResource DividerColor}" />
+    <SolidColorBrush x:Key="SheenBrush" Color="{StaticResource SheenColor}" />
+
+    <LinearGradientBrush x:Key="PageBackgroundBrush" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="{StaticResource BgAColor}" Offset="0" />
+        <GradientStop Color="{StaticResource BgBColor}" Offset="0.55" />
+        <GradientStop Color="{StaticResource BgCColor}" Offset="1" />
+    </LinearGradientBrush>
+
+</ResourceDictionary>

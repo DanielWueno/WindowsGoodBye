@@ -1,0 +1,84 @@
+<Window x:Class="WindowsGoodBye.TrayApp.ManageDevicesWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Style="{DynamicResource GlassWindow}"
+        Title="WindowsGoodBye — Dispositivos"
+        Width="640" Height="540">
+    <Grid>
+        <!-- Blurred color blobs — the "liquid glass" backdrop, drawn once behind everything else -->
+        <Canvas IsHitTestVisible="False" ClipToBounds="True">
+            <Ellipse Style="{DynamicResource Blob}" Width="240" Height="240" Canvas.Left="-70" Canvas.Top="-70" Fill="{DynamicResource CyanBrush}" />
+            <Ellipse Style="{DynamicResource Blob}" Width="220" Height="220" Canvas.Left="470" Canvas.Top="90" Fill="{DynamicResource PurpleBrush}" />
+            <Ellipse Style="{DynamicResource Blob}" Width="190" Height="190" Canvas.Left="30" Canvas.Top="360" Fill="{DynamicResource GreenBrush}" />
+        </Canvas>
+
+        <Grid Margin="24">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <StackPanel Grid.Row="0" Margin="0,0,0,16">
+                <TextBlock Text="Dispositivos emparejados" Style="{DynamicResource HeadingText}" />
+                <TextBlock x:Name="txtSubtitle" Style="{DynamicResource SubText}" Margin="0,4,0,0" />
+            </StackPanel>
+
+            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                <ItemsControl x:Name="itemsDevices">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <StackPanel />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border Style="{DynamicResource GlassPanel}" Margin="0,0,4,10" Padding="14">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <TextBlock Grid.Column="0" Text="&#128187;" FontSize="26" VerticalAlignment="Center" Margin="0,0,12,0" />
+
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding FriendlyName}" Style="{DynamicResource HeadingText}" FontSize="14" />
+                                        <TextBlock Text="{Binding ModelName}" Style="{DynamicResource BodyText}" />
+                                        <TextBlock Text="{Binding DetailText}" Style="{DynamicResource SubText}" Margin="0,2,0,0" />
+                                    </StackPanel>
+
+                                    <Button Grid.Column="2" Click="OnToggleEnabledClicked" Margin="0,0,8,0"
+                                            VerticalAlignment="Center" Background="{Binding StatusBackground}"
+                                            BorderThickness="0" Cursor="Hand" Padding="10,5">
+                                        <Button.Template>
+                                            <ControlTemplate TargetType="Button">
+                                                <Border Background="{TemplateBinding Background}"
+                                                        CornerRadius="{DynamicResource RadiusPill}"
+                                                        Padding="{TemplateBinding Padding}">
+                                                    <ContentPresenter />
+                                                </Border>
+                                            </ControlTemplate>
+                                        </Button.Template>
+                                        <TextBlock Text="{Binding ToggleActionText}" Foreground="{Binding StatusForeground}"
+                                                   FontWeight="Bold" FontSize="10.5" FontFamily="{DynamicResource SansFont}" />
+                                    </Button>
+
+                                    <Button Grid.Column="3" Style="{DynamicResource IconButton}" Width="32" Height="32"
+                                            Click="OnDeleteClicked" VerticalAlignment="Center" ToolTip="Eliminar dispositivo">
+                                        <TextBlock Text="&#10005;" FontSize="14" />
+                                    </Button>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+
+            <Button Grid.Row="2" Style="{DynamicResource GhostButton}" Content="Cerrar"
+                    HorizontalAlignment="Right" Margin="0,16,0,0" Click="OnCloseClicked" />
+        </Grid>
+    </Grid>
+</Window>

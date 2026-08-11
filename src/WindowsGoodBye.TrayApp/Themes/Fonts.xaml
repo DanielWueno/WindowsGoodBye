@@ -1,0 +1,15 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!--
+        Mockup de referencia (innovapp-liquid-glass) usa IBM Plex Sans / IBM Plex Mono, pero sus
+        archivos .ttf no se pudieron descargar en este entorno (sin salida a internet — ver
+        docs/implementation_progress_push_auth_v2.md, "network block"). Se usan de momento las
+        fuentes del sistema mas parecidas (Segoe UI / Consolas, ambas preinstaladas en Windows).
+        Para usar las fuentes reales: colocar los .ttf en Themes/Fonts/ y cambiar el FontFamily
+        de abajo a "./Fonts/#IBM Plex Sans" / "./Fonts/#IBM Plex Mono".
+    -->
+    <FontFamily x:Key="SansFont">Segoe UI</FontFamily>
+    <FontFamily x:Key="MonoFont">Consolas</FontFamily>
+
+</ResourceDictionary>

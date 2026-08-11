@@ -1,0 +1,36 @@
+<Window x:Class="WindowsGoodBye.TrayApp.PairDeviceWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Style="{DynamicResource GlassWindow}"
+        Title="WindowsGoodBye — Emparejar dispositivo"
+        Width="420" Height="580">
+    <Grid>
+        <Canvas IsHitTestVisible="False" ClipToBounds="True">
+            <Ellipse Style="{DynamicResource Blob}" Width="200" Height="200" Canvas.Left="-60" Canvas.Top="-60" Fill="{DynamicResource CyanBrush}" />
+            <Ellipse Style="{DynamicResource Blob}" Width="170" Height="170" Canvas.Left="260" Canvas.Top="420" Fill="{DynamicResource PurpleBrush}" />
+        </Canvas>
+
+        <Grid Margin="24">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <StackPanel Grid.Row="0" Margin="0,0,0,16">
+                <TextBlock Text="Emparejar nuevo dispositivo" Style="{DynamicResource HeadingText}" />
+                <TextBlock Text="Escanea este codigo QR con la app WindowsGoodBye en tu telefono"
+                           Style="{DynamicResource BodyText}" Margin="0,6,0,0" />
+            </StackPanel>
+
+            <Border Grid.Row="1" Style="{DynamicResource GlassPanelStrong}" Padding="20">
+                <Image x:Name="imgQr" Stretch="Uniform" />
+            </Border>
+
+            <Border Grid.Row="2" Style="{DynamicResource GlassPanel}" Margin="0,16,0,0" Padding="12,10">
+                <TextBlock x:Name="txtStatus" Style="{DynamicResource BodyText}" TextAlignment="Center"
+                           HorizontalAlignment="Center" Text="Esperando dispositivo..." />
+            </Border>
+        </Grid>
+    </Grid>
+</Window>
