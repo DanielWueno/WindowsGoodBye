@@ -645,6 +645,35 @@ public class AuthWorker : BackgroundService
         }
     }
 
+    /// <summary>
+    /// Fase 12 (TrayApp Config UI, docs/plan_push_auth_v2.md) hook: called by <see cref="AdminPipeServer"/>
+    /// when it receives <see cref="Protocol.AdminCmd_SetPushAuth"/>. Writes through THIS instance's own
+    /// long-lived <see cref="_db"/> — the SAME <see cref="AppDatabase"/> context <see cref="RunAuthRaceAsync"/>
+    /// queries devices from — rather than opening a fresh <see cref="AppDatabase"/> (the pattern used
+    /// elsewhere for concurrency, e.g. <see cref="OnRelayFcmTokenUpdateReceived"/>). This is deliberate:
+    /// EF Core's change tracker returns the SAME already-tracked <see cref="DeviceInfo"/> instance on
+    /// every subsequent <c>_db.Devices.Where(...)</c> query without refreshing its scalar properties
+    /// from the database — so a write made through a DIFFERENT DbContext/connection (e.g. the TrayApp's
+    /// own <see cref="AppDatabase"/>) would silently not be picked up by <see cref="RunAuthRaceAsync"/>'s
+    /// <c>d.PushAuthEnabled</c> check until the Service restarts. Writing through <c>_db</c> directly
+    /// sidesteps that gap entirely — the very next auth race cycle sees the new value.
+    /// </summary>
+    /// <returns>False if the Service hasn't finished starting up yet (<c>_db</c> not initialized) or the
+    /// device_id doesn't exist — the caller (<see cref="AdminPipeServer"/>) falls back to a fresh
+    /// <see cref="AppDatabase"/> write in the former case.</returns>
+    internal bool SetDevicePushAuthEnabled(Guid deviceId, bool enabled)
+    {
+        if (_db == null) return false;
+
+        var device = _db.Devices.Find(deviceId);
+        if (device == null) return false;
+
+        device.PushAuthEnabled = enabled;
+        _db.SaveChanges();
+        _logger.LogInformation("Push Auth {State} for {Name} via TrayApp", enabled ? "enabled" : "disabled", device.FriendlyName);
+        return true;
+    }
+
     /// <summary>True if at least one BT or TCP/USB client currently has an open connection.</summary>
     internal bool HasActiveDirectTransport =>
         (_bt?.HasActiveConnections ?? false) || (_tcp?.HasActiveConnections ?? false);
@@ -705,6 +734,10 @@ public class AuthWorker : BackgroundService
 
         if (tunnelConnected)
         {
+            // Fase 12 (TrayApp Config UI): d.PushAuthEnabled is the user-facing toggle set via the
+            // TrayApp's "Push Auth" menu (AdminPipeServer -> AuthWorker.SetDevicePushAuthEnabled) —
+            // already gated here since Fase 3 alongside the purely-technical FcmTokenValid check, so
+            // Ruta C respects the user's preference independently of whether the token happens to work.
             foreach (var device in devices.Where(d =>
                          d.PushAuthEnabled && d.FcmTokenValid && !string.IsNullOrEmpty(d.FcmToken)))
             {

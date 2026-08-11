@@ -108,8 +108,32 @@ public static class Protocol
     // Admin pipe commands (TrayApp → Service):
     public const string AdminCmd_PairStart = "PAIR_START";        // Start pairing session — followed by \n + base64(keys)
     public const string AdminCmd_PairCancel = "PAIR_CANCEL";      // Cancel active pairing
+
+    /// <summary>
+    /// Fase 12 (TrayApp Config UI, docs/plan_push_auth_v2.md): query the Service's current Cloudflare
+    /// Tunnel public URL (its own live <c>ITunnelStatusProvider.PublicUrl</c>), for the pairing QR's
+    /// <c>relay_url</c> segment. Only needed as a fallback when the TrayApp has no already-paired,
+    /// enabled <see cref="DeviceInfo.RelayUrl"/> to read locally (e.g. the very first pairing ever) —
+    /// see <c>TrayApplicationContext.ResolvePairingDefaults</c>. No payload. Response: <see cref="AdminResp_RelayStatus"/>.
+    /// </summary>
+    public const string AdminCmd_GetRelayStatus = "GET_RELAY_STATUS";
+
+    /// <summary>
+    /// Fase 12: update a paired device's <see cref="DeviceInfo.PushAuthEnabled"/> preference.
+    /// Format: <c>"SET_PUSH_AUTH\n{deviceId guid}\n{"1"|"0"}"</c>. The Service (not the TrayApp) performs
+    /// the actual <c>AppDatabase</c> write — see <c>AuthWorker.SetDevicePushAuthEnabled</c> — specifically
+    /// so the change lands on the SAME tracked <c>DeviceInfo</c> instance <c>AuthWorker.RunAuthRaceAsync</c>
+    /// reads from, avoiding an EF Core identity-map staleness gap that a direct TrayApp-side DB write
+    /// (a different DbContext/connection) would leave until the Service restarts. Response:
+    /// <see cref="AdminResp_Ok"/> or <see cref="AdminResp_Error"/>.
+    /// </summary>
+    public const string AdminCmd_SetPushAuth = "SET_PUSH_AUTH";
+
     // Admin pipe responses (Service → TrayApp):
-    public const string AdminResp_Ok = "OK";                      // Pairing session created
+    public const string AdminResp_Ok = "OK";                      // Pairing session created / command applied
     public const string AdminResp_PairDone = "PAIR_DONE";         // Pairing complete — followed by \n + name \n + model
     public const string AdminResp_Error = "ERROR";                // Something failed — followed by \n + message
+
+    /// <summary>Response to <see cref="AdminCmd_GetRelayStatus"/> — followed by \n + url (may be empty if no tunnel is connected).</summary>
+    public const string AdminResp_RelayStatus = "RELAY_STATUS";
 }

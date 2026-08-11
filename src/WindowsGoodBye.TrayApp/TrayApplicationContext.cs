@@ -1,4 +1,6 @@
+using System.IO.Pipes;
 using System.Text;
+using Microsoft.EntityFrameworkCore;
 using WindowsGoodBye.Core;
 using QRCoder;
 
@@ -41,11 +43,181 @@ public class TrayApplicationContext : ApplicationContext
         menu.Items.Add("Pair New Device", null, (_, _) => StartPairing());
         menu.Items.Add("Set Windows Password", null, (_, _) => SetCredentials());
         menu.Items.Add("Manage Devices", null, (_, _) => ShowMainForm());
+        menu.Items.Add(CreatePushAuthMenuItem());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Test Service Connection", null, (_, _) => TestServiceConnection());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => ExitApp());
         return menu;
+    }
+
+    // --- Fase 12 (docs/plan_push_auth_v2.md): Push Auth config UI ---
+
+    /// <summary>
+    /// "Push Auth" top-level menu item with one submenu per paired device (Habilitado/Deshabilitado).
+    /// The device list is rebuilt on every <c>DropDownOpening</c> (not once at construction time) so it
+    /// always reflects whatever is currently paired/toggled — including changes made from a second
+    /// TrayApp session or a fresh pairing since the tray icon was created.
+    /// </summary>
+    private ToolStripMenuItem CreatePushAuthMenuItem()
+    {
+        var item = new ToolStripMenuItem("Push Auth");
+        item.DropDownOpening += (_, _) => RebuildPushAuthSubmenu(item);
+        return item;
+    }
+
+    private void RebuildPushAuthSubmenu(ToolStripMenuItem parent)
+    {
+        parent.DropDownItems.Clear();
+
+        List<DeviceInfo> devices;
+        try
+        {
+            // AsNoTracking: this TrayApp's _db is long-lived (constructed once, in the constructor) —
+            // without AsNoTracking, once a DeviceInfo is tracked from an earlier query (e.g. opening
+            // "Manage Devices"), EF Core's identity map would keep returning that SAME stale instance
+            // here instead of re-reading PushAuthEnabled/FcmTokenValid from disk. The Service is the
+            // sole writer of PushAuthEnabled (see AuthWorker.SetDevicePushAuthEnabled) precisely so this
+            // read-only view always reflects the latest value without the TrayApp needing to write here.
+            devices = _db.Devices.AsNoTracking().OrderBy(d => d.FriendlyName).ToList();
+        }
+        catch (Exception ex)
+        {
+            parent.DropDownItems.Add(new ToolStripMenuItem($"Error: {ex.Message}") { Enabled = false });
+            return;
+        }
+
+        if (devices.Count == 0)
+        {
+            parent.DropDownItems.Add(new ToolStripMenuItem("(No hay dispositivos emparejados)") { Enabled = false });
+            return;
+        }
+
+        foreach (var device in devices)
+        {
+            // "No disponible" per docs/plan_push_auth_v2.md Fase 12: a device can have Push Auth
+            // enabled as a *preference* while technically unable to receive it right now because its
+            // FCM token is known-bad (DeviceInfo.FcmTokenValid, set false by AuthWorker.HandleFcmSendResult
+            // on a 404/UNREGISTERED from FCM) or simply missing (never synced yet). The toggle itself
+            // still works either way — it's a preference for when the token DOES become valid again.
+            var available = device.FcmTokenValid && !string.IsNullOrEmpty(device.FcmToken);
+            var deviceItem = new ToolStripMenuItem(available ? device.FriendlyName : $"{device.FriendlyName} (no disponible)");
+            if (!available)
+            {
+                deviceItem.ToolTipText = "Sin token FCM valido — requiere reconexion directa (Bluetooth/USB/WiFi) o re-emparejamiento.";
+            }
+
+            var enabledItem = new ToolStripMenuItem("Habilitado") { Checked = device.PushAuthEnabled };
+            var disabledItem = new ToolStripMenuItem("Deshabilitado") { Checked = !device.PushAuthEnabled };
+
+            enabledItem.Click += async (_, _) => await SetPushAuthPreferenceAsync(device, true, enabledItem, disabledItem);
+            disabledItem.Click += async (_, _) => await SetPushAuthPreferenceAsync(device, false, enabledItem, disabledItem);
+
+            deviceItem.DropDownItems.Add(enabledItem);
+            deviceItem.DropDownItems.Add(disabledItem);
+            parent.DropDownItems.Add(deviceItem);
+        }
+    }
+
+    /// <summary>
+    /// Sends <see cref="Protocol.AdminCmd_SetPushAuth"/> to the Service — which performs the actual
+    /// <c>DeviceInfo.PushAuthEnabled</c> write in <c>AppDatabase</c> (see <c>AdminPipeServer.HandleSetPushAuth</c>
+    /// / <c>AuthWorker.SetDevicePushAuthEnabled</c>), not the TrayApp itself. This keeps a single writer
+    /// of that column and sidesteps the EF Core identity-map staleness gap a direct TrayApp-side write
+    /// (a different DbContext/connection than the Service's own long-lived one) would otherwise leave
+    /// until the Service restarts — documented in detail on <c>AuthWorker.SetDevicePushAuthEnabled</c>.
+    /// </summary>
+    private static async Task SetPushAuthPreferenceAsync(
+        DeviceInfo device, bool enabled, ToolStripMenuItem enabledItem, ToolStripMenuItem disabledItem)
+    {
+        var command = $"{Protocol.AdminCmd_SetPushAuth}\n{device.DeviceId}\n{(enabled ? "1" : "0")}";
+        var response = await SendAdminCommandAsync(command);
+
+        if (response != null && response.StartsWith(Protocol.AdminResp_Ok))
+        {
+            enabledItem.Checked = enabled;
+            disabledItem.Checked = !enabled;
+        }
+        else
+        {
+            MessageBox.Show(
+                "No se pudo actualizar la preferencia de Push Auth.\n\n" +
+                "Asegurate de que el Servicio WindowsGoodBye este en ejecucion.",
+                "Push Auth", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    /// <summary>
+    /// Minimal one-shot request/response round trip over the admin pipe — for quick fire-and-wait
+    /// commands (<see cref="Protocol.AdminCmd_SetPushAuth"/>, <see cref="Protocol.AdminCmd_GetRelayStatus"/>)
+    /// that don't need the retry/keep-open dance <see cref="StartPairing"/> uses for the long-lived
+    /// pairing handshake. Returns null on any failure (Service not running, timeout, etc.) — callers
+    /// treat that as "couldn't reach the Service" and degrade gracefully rather than throwing.
+    /// </summary>
+    private static async Task<string?> SendAdminCommandAsync(string command, int connectTimeoutMs = 3000)
+    {
+        try
+        {
+            using var pipe = new NamedPipeClientStream(
+                ".", Protocol.AdminPipeName, PipeDirection.InOut, PipeOptions.None);
+            pipe.Connect(connectTimeoutMs);
+            pipe.ReadMode = PipeTransmissionMode.Message;
+
+            var cmdBytes = Encoding.UTF8.GetBytes(command);
+            await pipe.WriteAsync(cmdBytes).ConfigureAwait(false);
+            await pipe.FlushAsync().ConfigureAwait(false);
+
+            var buf = new byte[4096];
+            var bytesRead = await pipe.ReadAsync(buf).ConfigureAwait(false);
+            return Encoding.UTF8.GetString(buf, 0, bytesRead).Trim();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Resolves what to pass to <c>PairingSession.GenerateQrData(relayUrl, pushAuthEnabledDefault)</c> —
+    /// see docs/implementation_progress_push_auth_v2.md, Fase 10's note to Fase 12: before this method
+    /// existed, <see cref="StartPairing"/> called <c>GenerateQrData()</c> with no arguments, so every QR
+    /// carried an empty relay_url and Android never learned the tunnel URL until a later auth_challenge.
+    /// </summary>
+    private (string? relayUrl, bool pushAuthEnabledDefault) ResolvePairingDefaults()
+    {
+        string? relayUrl = null;
+        try
+        {
+            // Cheapest source of truth, no IPC needed: TunnelHostedService (Fase 4) keeps
+            // DeviceInfo.RelayUrl in sync for every enabled device whenever the tunnel URL changes, so
+            // any already-paired device's column already holds the Service's current relay URL.
+            relayUrl = _db.Devices.AsNoTracking()
+                .Where(d => d.Enabled && d.RelayUrl != null && d.RelayUrl != "")
+                .Select(d => d.RelayUrl)
+                .FirstOrDefault();
+        }
+        catch { /* best effort — fall through to asking the Service directly */ }
+
+        if (string.IsNullOrEmpty(relayUrl))
+        {
+            // No paired device yet (e.g. the very first pairing ever) — ask the Service directly; it
+            // always knows its own current ITunnelStatusProvider.PublicUrl even before any device
+            // exists to persist it on. Bounded synchronous wait (same pattern already used by
+            // TestServiceConnection's pipe.Connect) — acceptable for a one-off pairing-setup click.
+            var response = SendAdminCommandAsync(Protocol.AdminCmd_GetRelayStatus).GetAwaiter().GetResult();
+            if (response != null && response.StartsWith(Protocol.AdminResp_RelayStatus))
+            {
+                var parts = response.Split('\n');
+                if (parts.Length > 1 && !string.IsNullOrWhiteSpace(parts[1]))
+                    relayUrl = parts[1];
+            }
+        }
+
+        // No dedicated "default Push Auth for new pairings" setting exists (out of scope for this
+        // batch — see docs/implementation_progress_push_auth_v2.md, Fase 12 notes): true matches
+        // DeviceInfo.PushAuthEnabled's own default; the user can flip it per-device afterwards from the
+        // new "Push Auth" tray menu above.
+        return (relayUrl, true);
     }
 
     private void ShowMainForm()
@@ -134,7 +306,13 @@ public class TrayApplicationContext : ApplicationContext
     {
         var session = new PairingSession();
         PairingSession.Active = session;
-        var qrData = session.GenerateQrData();
+
+        // Fase 12 (docs/plan_push_auth_v2.md): pass the Service's real relay_url + the Push Auth
+        // default so Android learns the tunnel URL and initial preference from the QR itself, instead
+        // of leaving the relay_url segment empty until a later auth_challenge (see
+        // docs/implementation_progress_push_auth_v2.md, Fase 10's note to this phase).
+        var (relayUrl, pushAuthEnabledDefault) = ResolvePairingDefaults();
+        var qrData = session.GenerateQrData(relayUrl, pushAuthEnabledDefault);
 
         // Generate QR code
         using var qrGenerator = new QRCodeGenerator();

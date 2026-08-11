@@ -14,10 +14,18 @@ namespace WindowsGoodBye.Service;
 public class AdminPipeServer : BackgroundService
 {
     private readonly ILogger<AdminPipeServer> _logger;
+    private readonly ITunnelStatusProvider _tunnelStatus;
 
-    public AdminPipeServer(ILogger<AdminPipeServer> logger)
+    /// <param name="tunnelStatus">
+    /// Fase 12 (TrayApp Config UI, docs/plan_push_auth_v2.md): the same <see cref="ITunnelStatusProvider"/>
+    /// singleton Fase 4 registers in <c>Program.cs</c> (a thin adapter over <see cref="TunnelManager"/>) —
+    /// answers <see cref="Protocol.AdminCmd_GetRelayStatus"/> without needing to reach into <see cref="AuthWorker"/>.
+    /// DI resolves this automatically since it's already registered before this hosted service.
+    /// </param>
+    public AdminPipeServer(ILogger<AdminPipeServer> logger, ITunnelStatusProvider tunnelStatus)
     {
         _logger = logger;
+        _tunnelStatus = tunnelStatus;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -98,6 +106,14 @@ public class AdminPipeServer : BackgroundService
                 _logger.LogInformation("Pairing session cancelled by TrayApp");
                 await WritePipeAsync(pipe, Protocol.AdminResp_Ok, ct);
             }
+            else if (command == Protocol.AdminCmd_GetRelayStatus)
+            {
+                await HandleGetRelayStatus(pipe, ct);
+            }
+            else if (command.StartsWith(Protocol.AdminCmd_SetPushAuth))
+            {
+                await HandleSetPushAuth(pipe, command, ct);
+            }
             else
             {
                 _logger.LogWarning("Unknown admin command: {Cmd}", command);
@@ -154,6 +170,66 @@ public class AdminPipeServer : BackgroundService
             _logger.LogError(ex, "Error in PairStart handler");
             try { await WritePipeAsync(pipe, Protocol.AdminResp_Error + "\n" + ex.Message, ct); } catch { }
             PairingSession.Active = null;
+        }
+    }
+
+    /// <summary>
+    /// Fase 12 (TrayApp Config UI): answers <see cref="Protocol.AdminCmd_GetRelayStatus"/> with the
+    /// Service's current Cloudflare Tunnel public URL, if any. The TrayApp only needs this as a
+    /// fallback when it has no already-paired, enabled <c>DeviceInfo.RelayUrl</c> to read locally from
+    /// its own copy of <c>AppDatabase</c> (e.g. the very first pairing ever, before any device exists).
+    /// </summary>
+    private async Task HandleGetRelayStatus(NamedPipeServerStream pipe, CancellationToken ct)
+    {
+        var url = _tunnelStatus.PublicUrl ?? "";
+        await WritePipeAsync(pipe, $"{Protocol.AdminResp_RelayStatus}\n{url}", ct);
+    }
+
+    /// <summary>
+    /// Fase 12 (TrayApp Config UI): handles <see cref="Protocol.AdminCmd_SetPushAuth"/>
+    /// ("SET_PUSH_AUTH\n{deviceId}\n{0|1}"). Prefers <see cref="AuthWorker.SetDevicePushAuthEnabled"/>
+    /// (writes through the SAME tracked <see cref="AppDatabase"/> instance <c>AuthWorker.RunAuthRaceAsync</c>
+    /// reads from — see that method's XML doc for why that matters); falls back to a fresh
+    /// <see cref="AppDatabase"/> write only in the unlikely case <see cref="AuthWorker.Instance"/> isn't
+    /// up yet (Service still starting), matching the existing fallback pattern already used by
+    /// <c>PipeServer.WaitAuthEventAsync</c> for the same edge case.
+    /// </summary>
+    private async Task HandleSetPushAuth(NamedPipeServerStream pipe, string command, CancellationToken ct)
+    {
+        try
+        {
+            var parts = command.Split('\n');
+            if (parts.Length != 3 || !Guid.TryParse(parts[1].Trim(), out var deviceId) ||
+                (parts[2].Trim() != "0" && parts[2].Trim() != "1"))
+            {
+                await WritePipeAsync(pipe, Protocol.AdminResp_Error + "\nMalformed SET_PUSH_AUTH command", ct);
+                return;
+            }
+
+            var enabled = parts[2].Trim() == "1";
+
+            var applied = AuthWorker.Instance?.SetDevicePushAuthEnabled(deviceId, enabled) ?? false;
+            if (!applied)
+            {
+                // AuthWorker not started yet (rare) — fall back to a fresh, one-off AppDatabase write.
+                using var freshDb = new AppDatabase();
+                var device = freshDb.Devices.Find(deviceId);
+                if (device == null)
+                {
+                    await WritePipeAsync(pipe, Protocol.AdminResp_Error + "\nUnknown device_id", ct);
+                    return;
+                }
+                device.PushAuthEnabled = enabled;
+                freshDb.SaveChanges();
+                applied = true;
+            }
+
+            await WritePipeAsync(pipe, Protocol.AdminResp_Ok, ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error handling SET_PUSH_AUTH");
+            try { await WritePipeAsync(pipe, Protocol.AdminResp_Error + "\n" + ex.Message, ct); } catch { }
         }
     }
 
